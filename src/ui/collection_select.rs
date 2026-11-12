@@ -2,7 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Bar, BarChart, BarGroup, LineGauge, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use crate::app::App;
 use crate::domain::Rarity;
@@ -31,17 +34,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let owned = prog.map(|p| p.unique_owned).unwrap_or(0);
 
             let badge = if app.syncing_collection_id.as_deref() == Some(&col.id) {
-                Span::styled(
-                    format!(" [{spin} SYNCING...]"),
-                    Style::default().fg(theme::ACCENT_GOLD),
-                )
+                theme::pill_badge(format!("{spin} SYNCING"), theme::BG_DARK, theme::ACCENT_GOLD)
             } else if cached > 0 {
-                Span::styled(
-                    format!(" [READY: {cached} cards • {owned} owned]"),
-                    Style::default().fg(theme::ACCENT_GREEN),
+                theme::pill_badge(
+                    format!("READY {cached} • {owned} owned"),
+                    theme::BG_DARK,
+                    theme::ACCENT_GREEN,
                 )
             } else {
-                Span::styled(" [TAP ENTER TO SYNC]", Style::default().fg(theme::ACCENT_CYAN))
+                theme::pill_badge("ENTER TO SYNC", theme::BG_DARK, theme::ACCENT_CYAN)
             };
 
             let prefix = if idx == app.collection_idx { "▶ " } else { "  " };
@@ -49,7 +50,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ListItem::new(vec![
                 Line::from(vec![
                     Span::styled(
-                        format!("{prefix}{}", col.name),
+                        format!("{prefix}{} ", col.name),
                         Style::default()
                             .fg(theme::TEXT_PRIMARY)
                             .add_modifier(Modifier::BOLD),
@@ -58,7 +59,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ]),
                 Line::from(Span::styled(
                     format!(
-                        "    Series: {} • Released: {} • Full Set: {} cards",
+                        "  Series: {} • Released: {} • Full Set: {} cards",
                         col.series, release, col.total_cards_in_set
                     ),
                     theme::muted_style(),
@@ -71,98 +72,138 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     state.select(Some(app.collection_idx));
 
     let title = if app.syncing_collections_list {
-        format!(" Collections ({spin} Refreshing...) ")
+        format!("Collections ({spin} Refreshing...)")
     } else {
-        " Select Collection / Card Set ".to_string()
+        "Select Collection / Card Set".to_string()
     };
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::BORDER_FOCUS))
-                .style(Style::default().bg(theme::BG_PANEL))
-                .title(Span::styled(title, theme::title_style())),
-        )
+        .block(theme::panel_block(title, true))
         .highlight_style(Style::default().bg(theme::BG_SELECTED));
     frame.render_stateful_widget(list, cols[0], &mut state);
 
-    // Right panel: Collection details + rarity breakdown
-    let mut lines = Vec::new();
-    if let Some(col) = app.collections.get(app.collection_idx) {
-        let cached = app.cached_card_counts.get(&col.id).copied().unwrap_or(0);
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {}", col.name),
+    if app.collections.len() * 2 > cols[0].height.saturating_sub(2) as usize {
+        let mut sb = ScrollbarState::new(app.collections.len()).position(app.collection_idx);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            cols[0],
+            &mut sb,
+        );
+    }
+
+    // Right panel: Overview + Completion Gauge + Rarity BarChart
+    let right_block = theme::panel_block("Collection Overview", false);
+    let right_inner = right_block.inner(cols[1]);
+    frame.render_widget(right_block, cols[1]);
+
+    let Some(col) = app.collections.get(app.collection_idx) else {
+        return;
+    };
+
+    let cached = app.cached_card_counts.get(&col.id).copied().unwrap_or(0);
+    let prog = app
+        .collection_progress
+        .iter()
+        .find(|p| p.collection_id == col.id);
+    let owned = prog.map(|p| p.unique_owned).unwrap_or(0);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(7),
+            Constraint::Length(if cached > 0 { 2 } else { 0 }),
+            Constraint::Length(if cached > 0 { 9 } else { 3 }),
+        ])
+        .split(right_inner);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            col.name.clone(),
             Style::default()
                 .fg(theme::ACCENT_GOLD)
                 .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("  Set Code: {}  •  Series: {}", col.id, col.series),
+        )),
+        Line::from(Span::styled(
+            format!("Set Code: {}  •  Series: {}", col.id, col.series),
             Style::default().fg(theme::ACCENT_CYAN),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {}", col.description),
-            theme::primary_style(),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Cached Cards : ", theme::muted_style()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(col.description.clone(), theme::primary_style())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Cached Pool : ", theme::muted_style()),
             Span::styled(
-                format!("{cached} (up to {} per sync)", app.settings.cards_per_sync),
+                format!("{cached} cards (sync limit: {})", app.settings.cards_per_sync),
                 theme::primary_style(),
             ),
+        ]),
+    ];
+    if let Some(ref synced) = col.synced_at {
+        let short = synced.get(..19).unwrap_or(synced).replace('T', " ");
+        lines.push(Line::from(vec![
+            Span::styled("Last Synced : ", theme::muted_style()),
+            Span::styled(short, theme::primary_style()),
         ]));
-        if let Some(ref synced) = col.synced_at {
-            let short = synced.get(..19).unwrap_or(synced).replace('T', " ");
-            lines.push(Line::from(vec![
-                Span::styled("  Last Synced  : ", theme::muted_style()),
-                Span::styled(short, theme::primary_style()),
-            ]));
-        }
-
-        if cached > 0 {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  Cached Pool Rarity Breakdown:",
-                Style::default()
-                    .fg(theme::TEXT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for &rarity in Rarity::all() {
-                let n = app.cached_rarity_counts.get(&rarity).copied().unwrap_or(0);
-                if n > 0 {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("    {:<6} {:<13} : ", rarity.short_badge(), rarity.label()),
-                            theme::rarity_style(rarity, app.tick),
-                        ),
-                        Span::styled(format!("{n} cards"), theme::primary_style()),
-                    ]));
-                }
-            }
-        } else {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  Press [Enter] or [s] to fetch real card metadata & artwork URLs from TCGdex!",
-                Style::default().fg(theme::ACCENT_CYAN),
-            )));
-        }
     }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), sections[0]);
 
-    let detail = Paragraph::new(lines)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::BORDER_DIM))
-                .style(Style::default().bg(theme::BG_PANEL))
-                .title(Span::styled(" Collection Overview ", theme::title_style())),
+    if cached > 0 {
+        let ratio = (owned as f64 / cached.max(1) as f64).clamp(0.0, 1.0);
+        let gauge = LineGauge::default()
+            .ratio(ratio)
+            .label(format!(
+                "Set Completion: {owned}/{cached} ({:.0}%)",
+                ratio * 100.0
+            ))
+            .filled_style(Style::default().fg(theme::ACCENT_GREEN))
+            .unfilled_style(Style::default().fg(theme::BORDER_DIM));
+        frame.render_widget(gauge, sections[1]);
+
+        let bars: Vec<Bar<'_>> = Rarity::all()
+            .iter()
+            .map(|&rarity| {
+                let count = app.cached_rarity_counts.get(&rarity).copied().unwrap_or(0) as u64;
+                let color = theme::rarity_color(rarity, app.tick);
+                let short_lbl = match rarity {
+                    Rarity::Common => "Com",
+                    Rarity::Uncommon => "Unc",
+                    Rarity::Rare => "Rare",
+                    Rarity::HoloRare => "Holo",
+                    Rarity::UltraRare => "Ult",
+                    Rarity::SecretRare => "Sec",
+                };
+                Bar::default()
+                    .value(count)
+                    .label(Line::from(short_lbl))
+                    .style(Style::default().fg(color))
+                    .value_style(
+                        Style::default()
+                            .fg(theme::BG_DARK)
+                            .bg(color)
+                            .add_modifier(Modifier::BOLD),
+                    )
+            })
+            .collect();
+
+        let chart = BarChart::default()
+            .block(
+                ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::TOP)
+                    .border_style(Style::default().fg(theme::BORDER_DIM))
+                    .title(Span::styled(" Pool Rarity Breakdown ", theme::muted_style())),
+            )
+            .data(BarGroup::default().bars(&bars))
+            .bar_width(4)
+            .bar_gap(2);
+        frame.render_widget(chart, sections[2]);
+    } else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Press [Enter] or [s] to fetch card metadata & artwork from TCGdex!",
+                Style::default().fg(theme::ACCENT_CYAN),
+            ))
+            .wrap(Wrap { trim: true }),
+            sections[2],
         );
-    frame.render_widget(detail, cols[1]);
+    }
 }
-

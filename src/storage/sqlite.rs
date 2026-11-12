@@ -292,6 +292,26 @@ impl CardRepository for SqliteStore {
         Ok(cards)
     }
 
+    fn list_cards_by_ids(&self, ids: &[String]) -> AppResult<Vec<Card>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("sqlite mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, universe_id, collection_id, card_number, name, rarity, raw_rarity,
+                    image_url, thumbnail_url, local_image_path, metadata_json
+             FROM cards
+             WHERE id = ?1",
+        )?;
+        let mut result = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(card) = stmt.query_row([id], Self::map_card_row).optional()? {
+                result.push(card);
+            }
+        }
+        Ok(result)
+    }
+
     fn count_cards_in_collection(&self, collection_id: &str) -> AppResult<usize> {
         let conn = self.conn.lock().expect("sqlite mutex poisoned");
         let count: i64 = conn.query_row(

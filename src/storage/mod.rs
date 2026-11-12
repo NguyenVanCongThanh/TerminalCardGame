@@ -18,6 +18,7 @@ pub trait CollectionRepository: Send + Sync {
 /// Persistence contract for cached collectible cards.
 pub trait CardRepository: Send + Sync {
     fn list_cards_in_collection(&self, collection_id: &str) -> AppResult<Vec<Card>>;
+    fn list_cards_by_ids(&self, ids: &[String]) -> AppResult<Vec<Card>>;
     fn count_cards_in_collection(&self, collection_id: &str) -> AppResult<usize>;
     fn upsert_cards(&self, cards: &[Card]) -> AppResult<()>;
     fn update_local_image_path(&self, card_id: &str, path: &str) -> AppResult<()>;

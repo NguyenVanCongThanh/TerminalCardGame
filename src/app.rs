@@ -80,6 +80,52 @@ pub enum AsyncMessage {
     ImageResized(ResizedSlotEvent),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAction {
+    ClearImageCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveModal {
+    Confirm {
+        title: String,
+        message: String,
+        action: ConfirmAction,
+    },
+    Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionSort {
+    Newest,
+    RarityDesc,
+    QuantityDesc,
+    CardNumber,
+    NameAsc,
+}
+
+impl CollectionSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            CollectionSort::Newest => "Newest",
+            CollectionSort::RarityDesc => "Rarity ↓",
+            CollectionSort::QuantityDesc => "Qty ↓",
+            CollectionSort::CardNumber => "Set #",
+            CollectionSort::NameAsc => "Name A-Z",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            CollectionSort::Newest => CollectionSort::RarityDesc,
+            CollectionSort::RarityDesc => CollectionSort::QuantityDesc,
+            CollectionSort::QuantityDesc => CollectionSort::CardNumber,
+            CollectionSort::CardNumber => CollectionSort::NameAsc,
+            CollectionSort::NameAsc => CollectionSort::Newest,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusBanner {
     pub message: String,
@@ -117,6 +163,8 @@ pub struct App {
 
     // Screen-specific cursors & states
     pub menu_idx: usize,
+    pub menu_focus_history: bool,
+    pub history_idx: usize,
     pub universe_idx: usize,
     pub selected_universe_id: String,
     pub collection_idx: usize,
@@ -126,20 +174,26 @@ pub struct App {
     pub pack_idx: usize,
     pub pack_opening: Option<PackOpeningState>,
 
-    // My Collection filters & view
+    // My Collection filters, search, sort & view
     pub collection_filter: Option<String>,
     pub rarity_filter: Option<Rarity>,
+    pub search_query: String,
+    pub search_active: bool,
+    pub sort_mode: CollectionSort,
     pub owned_cursor: usize,
     pub grid_mode: bool,
+    pub grid_page_size: usize,
 
     // Card details view
     pub detail_cards: Vec<InspectableCard>,
     pub detail_idx: usize,
     pub detail_return_screen: Screen,
+    pub detail_scroll: u16,
 
     // Settings cursor
     pub settings_idx: usize,
 
+    pub modal: Option<ActiveModal>,
     pub banner: Option<StatusBanner>,
 }
 
@@ -176,7 +230,9 @@ impl App {
         });
 
         let mut image_slots = HashMap::new();
-        for key in ["main", "preview", "grid-0", "grid-1", "grid-2", "grid-3"] {
+        for key in [
+            "main", "preview", "grid-0", "grid-1", "grid-2", "grid-3", "grid-4", "grid-5",
+        ] {
             image_slots.insert(key.to_string(), CardImageSlot::new(key, resize_tx.clone()));
         }
 
@@ -204,6 +260,8 @@ impl App {
             pack_history: Vec::new(),
             cache_stats: CacheStats::default(),
             menu_idx: 0,
+            menu_focus_history: false,
+            history_idx: 0,
             universe_idx: 0,
             selected_universe_id,
             collection_idx: 0,
@@ -214,12 +272,18 @@ impl App {
             pack_opening: None,
             collection_filter: None,
             rarity_filter: None,
+            search_query: String::new(),
+            search_active: false,
+            sort_mode: CollectionSort::Newest,
             owned_cursor: 0,
             grid_mode: false,
+            grid_page_size: 4,
             detail_cards: Vec::new(),
             detail_idx: 0,
             detail_return_screen: Screen::MyCollection,
+            detail_scroll: 0,
             settings_idx: 0,
+            modal: None,
             banner: None,
         };
 
@@ -283,13 +347,80 @@ impl App {
     }
 
     pub fn filtered_owned_cards(&self) -> Vec<&OwnedCard> {
-        self.owned_cards
+        let query = self.search_query.trim().to_ascii_lowercase();
+        let mut items: Vec<&OwnedCard> = self
+            .owned_cards
             .iter()
             .filter(|o| match self.rarity_filter {
                 Some(r) => o.card.rarity == r,
                 None => true,
             })
-            .collect()
+            .filter(|o| {
+                if query.is_empty() {
+                    return true;
+                }
+                o.card.name.to_ascii_lowercase().contains(&query)
+                    || o.card.card_number.to_ascii_lowercase().contains(&query)
+                    || o.card.raw_rarity.to_ascii_lowercase().contains(&query)
+                    || o.card
+                        .metadata
+                        .tags
+                        .iter()
+                        .any(|t| t.to_ascii_lowercase().contains(&query))
+            })
+            .collect();
+
+        match self.sort_mode {
+            CollectionSort::Newest => {}
+            CollectionSort::RarityDesc => {
+                items.sort_by(|a, b| {
+                    b.card
+                        .rarity
+                        .cmp(&a.card.rarity)
+                        .then_with(|| a.card.name.cmp(&b.card.name))
+                });
+            }
+            CollectionSort::QuantityDesc => {
+                items.sort_by(|a, b| {
+                    b.quantity
+                        .cmp(&a.quantity)
+                        .then_with(|| b.card.rarity.cmp(&a.card.rarity))
+                        .then_with(|| a.card.name.cmp(&b.card.name))
+                });
+            }
+            CollectionSort::CardNumber => {
+                items.sort_by(|a, b| {
+                    let na = a.card.card_number.parse::<u32>().unwrap_or(u32::MAX);
+                    let nb = b.card.card_number.parse::<u32>().unwrap_or(u32::MAX);
+                    a.card
+                        .collection_id
+                        .cmp(&b.card.collection_id)
+                        .then_with(|| na.cmp(&nb))
+                        .then_with(|| a.card.card_number.cmp(&b.card.card_number))
+                });
+            }
+            CollectionSort::NameAsc => {
+                items.sort_by(|a, b| a.card.name.cmp(&b.card.name));
+            }
+        }
+        items
+    }
+
+    pub fn grid_cols(&self) -> usize {
+        match self.grid_page_size {
+            6 => 3,
+            _ => 2,
+        }
+    }
+
+    pub fn sync_grid_page_size(&mut self, new_size: usize) {
+        let clamped = new_size.clamp(2, 6);
+        if self.grid_page_size != clamped {
+            self.grid_page_size = clamped;
+            if self.grid_mode && self.screen == Screen::MyCollection {
+                self.sync_collection_preview_slots();
+            }
+        }
     }
 
     pub fn active_universe(&self) -> Option<&Universe> {
@@ -461,6 +592,14 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.modal.is_some() {
+            self.handle_modal_key(key);
+            return;
+        }
+        if key.code == KeyCode::Char('?') && !self.search_active {
+            self.modal = Some(ActiveModal::Help);
+            return;
+        }
         match self.screen {
             Screen::MainMenu => self.handle_main_menu_key(key),
             Screen::UniverseSelect => self.handle_universe_key(key),
@@ -473,8 +612,106 @@ impl App {
         }
     }
 
+    fn handle_modal_key(&mut self, key: KeyEvent) {
+        let Some(modal) = self.modal.clone() else {
+            return;
+        };
+        match modal {
+            ActiveModal::Help => match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('?')
+                | KeyCode::Char('q') => {
+                    self.modal = None;
+                }
+                _ => {}
+            },
+            ActiveModal::Confirm { action, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                    self.modal = None;
+                }
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.modal = None;
+                    self.execute_confirm_action(action);
+                }
+                _ => {}
+            },
+        }
+    }
+
+    fn execute_confirm_action(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::ClearImageCache => {
+                if let Err(e) = self.image_cache.clear_cache() {
+                    self.set_banner(format!("Failed clearing cache: {e}"), true);
+                } else {
+                    let _ = self.store.clear_local_image_paths();
+                    for slot in self.image_slots.values_mut() {
+                        slot.clear();
+                    }
+                    self.cache_stats = self.image_cache.stats();
+                    self.set_banner("Cleared local image cache", false);
+                }
+            }
+        }
+    }
+
     fn handle_main_menu_key(&mut self, key: KeyEvent) {
         const MENU_LEN: usize = 5;
+        if key.code == KeyCode::Tab && !self.pack_history.is_empty() {
+            self.menu_focus_history = !self.menu_focus_history;
+            if self.history_idx >= self.pack_history.len() {
+                self.history_idx = 0;
+            }
+            return;
+        }
+
+        if self.menu_focus_history && !self.pack_history.is_empty() {
+            let hlen = self.pack_history.len();
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.history_idx = self.history_idx.checked_sub(1).unwrap_or(hlen - 1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.history_idx = (self.history_idx + 1) % hlen;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    if let Some(entry) = self.pack_history.get(self.history_idx).cloned()
+                        && let Ok(cards) = self.store.list_cards_by_ids(&entry.card_ids)
+                        && !cards.is_empty()
+                    {
+                        let inspectables: Vec<InspectableCard> = cards
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, card)| {
+                                let qty = self
+                                    .owned_cards
+                                    .iter()
+                                    .find(|o| o.card.id == card.id)
+                                    .map(|o| o.quantity)
+                                    .unwrap_or(1);
+                                InspectableCard {
+                                    card,
+                                    quantity: qty,
+                                    first_acquired_at: Some(entry.opened_at.clone()),
+                                    slot_note: Some(format!("{} (Slot {})", entry.pack_name, i + 1)),
+                                }
+                            })
+                            .collect();
+                        self.open_card_details(inspectables, 0, Screen::MainMenu);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.menu_focus_history = false;
+                }
+                KeyCode::Char('1') => self.activate_main_menu(0),
+                KeyCode::Char('2') => self.activate_main_menu(1),
+                KeyCode::Char('3') => self.activate_main_menu(2),
+                KeyCode::Char('4') => self.activate_main_menu(3),
+                KeyCode::Char('5') | KeyCode::Char('q') => self.running = false,
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.menu_idx = self.menu_idx.checked_sub(1).unwrap_or(MENU_LEN - 1);
@@ -679,9 +916,7 @@ impl App {
                         if !revealed[*cursor] {
                             revealed[*cursor] = true;
                             let pulled = &state.result.cards[*cursor];
-                            if pulled.card.rarity.is_hit() {
-                                *flash_ticks = 14;
-                            }
+                            *flash_ticks = if pulled.card.rarity.is_hit() { 16 } else { 5 };
                             action = Some(Action::BindMainCard(Box::new(pulled.card.clone())));
                         } else if *cursor + 1 < total {
                             *cursor += 1;
@@ -769,13 +1004,51 @@ impl App {
     }
 
     fn handle_my_collection_key(&mut self, key: KeyEvent) {
+        if self.search_active {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.search_active = false;
+                }
+                KeyCode::Backspace => {
+                    self.search_query.pop();
+                    self.owned_cursor = 0;
+                    self.sync_collection_preview_slots();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.search_query.push(c);
+                    self.owned_cursor = 0;
+                    self.sync_collection_preview_slots();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let len = self.filtered_owned_cards().len();
+        let grid_cols = self.grid_cols();
         match key.code {
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
                 self.screen = Screen::MainMenu;
             }
+            KeyCode::Char('/') => {
+                self.search_active = true;
+            }
+            KeyCode::Char('s') => {
+                self.sort_mode = self.sort_mode.next();
+                self.owned_cursor = 0;
+                self.sync_collection_preview_slots();
+            }
+            KeyCode::Char('x') if !self.search_query.is_empty() => {
+                self.search_query.clear();
+                self.owned_cursor = 0;
+                self.sync_collection_preview_slots();
+            }
             KeyCode::Up | KeyCode::Char('k') if len > 0 => {
-                let step = if self.grid_mode && len > 2 { 2 } else { 1 };
+                let step = if self.grid_mode && len > grid_cols {
+                    grid_cols
+                } else {
+                    1
+                };
                 self.owned_cursor = if self.owned_cursor >= step {
                     self.owned_cursor - step
                 } else {
@@ -784,7 +1057,11 @@ impl App {
                 self.sync_collection_preview_slots();
             }
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
-                let step = if self.grid_mode && len > 2 { 2 } else { 1 };
+                let step = if self.grid_mode && len > grid_cols {
+                    grid_cols
+                } else {
+                    1
+                };
                 self.owned_cursor = (self.owned_cursor + step) % len;
                 self.sync_collection_preview_slots();
             }
@@ -868,13 +1145,27 @@ impl App {
                     self.sync_collection_preview_slots();
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k') if len > 0 => {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.detail_scroll = self.detail_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(6);
+            }
+            KeyCode::PageDown => {
+                self.detail_scroll = self.detail_scroll.saturating_add(6);
+            }
+            KeyCode::Left | KeyCode::Char('h') if len > 0 => {
                 self.detail_idx = self.detail_idx.checked_sub(1).unwrap_or(len - 1);
+                self.detail_scroll = 0;
                 let card = self.detail_cards[self.detail_idx].card.clone();
                 self.request_card_into_slot("main", &card);
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+            KeyCode::Right | KeyCode::Char('l') if len > 0 => {
                 self.detail_idx = (self.detail_idx + 1) % len;
+                self.detail_scroll = 0;
                 let card = self.detail_cards[self.detail_idx].card.clone();
                 self.request_card_into_slot("main", &card);
             }
@@ -894,17 +1185,20 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.settings_idx = (self.settings_idx + 1) % SETTINGS_ROWS;
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
-                self.adjust_setting(true);
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.adjust_setting(true, true);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.adjust_setting(true, false);
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                self.adjust_setting(false);
+                self.adjust_setting(false, false);
             }
             _ => {}
         }
     }
 
-    fn adjust_setting(&mut self, forward: bool) {
+    fn adjust_setting(&mut self, forward: bool, is_activate: bool) {
         match self.settings_idx {
             0 => {
                 self.settings.protocol_mode = if forward {
@@ -955,17 +1249,16 @@ impl App {
                 self.settings.cards_per_sync = SIZES[next];
                 let _ = self.store.save_settings(&self.settings);
             }
-            4 => {
-                if let Err(e) = self.image_cache.clear_cache() {
-                    self.set_banner(format!("Failed clearing cache: {e}"), true);
-                } else {
-                    let _ = self.store.clear_local_image_paths();
-                    for slot in self.image_slots.values_mut() {
-                        slot.clear();
-                    }
-                    self.cache_stats = self.image_cache.stats();
-                    self.set_banner("Cleared local image cache", false);
-                }
+            4 if is_activate => {
+                self.modal = Some(ActiveModal::Confirm {
+                    title: "Clear Local Image Cache?".to_string(),
+                    message: format!(
+                        "This will delete {} cached PNG files ({:.1} KB). Your synced cards, inventory, and pack history remain safe.",
+                        self.cache_stats.file_count,
+                        self.cache_stats.total_bytes as f64 / 1024.0
+                    ),
+                    action: ConfirmAction::ClearImageCache,
+                });
             }
             _ => {}
         }
@@ -986,6 +1279,7 @@ impl App {
         self.detail_cards = cards;
         self.detail_idx = idx.min(self.detail_cards.len().saturating_sub(1));
         self.detail_return_screen = return_screen;
+        self.detail_scroll = 0;
         self.screen = Screen::CardDetails;
         if let Some(item) = self.detail_cards.get(self.detail_idx) {
             let card = item.card.clone();
@@ -1078,7 +1372,7 @@ impl App {
             if let Some(s) = self.image_slots.get_mut("preview") {
                 s.clear();
             }
-            for i in 0..4 {
+            for i in 0..6 {
                 if let Some(s) = self.image_slots.get_mut(&format!("grid-{i}")) {
                     s.clear();
                 }
@@ -1087,10 +1381,13 @@ impl App {
         }
 
         if self.grid_mode {
-            let page_start = (self.owned_cursor / 4) * 4;
-            for i in 0..4 {
+            let page_size = self.grid_page_size.clamp(2, 6);
+            let page_start = (self.owned_cursor / page_size) * page_size;
+            for i in 0..6 {
                 let slot_key = format!("grid-{i}");
-                if let Some(card) = filtered.get(page_start + i).cloned() {
+                if i < page_size
+                    && let Some(card) = filtered.get(page_start + i).cloned()
+                {
                     self.request_card_into_slot(&slot_key, &card);
                 } else if let Some(s) = self.image_slots.get_mut(&slot_key) {
                     s.clear();
