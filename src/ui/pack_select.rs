@@ -7,28 +7,28 @@ use ratatui::widgets::{
     TableState,
 };
 
-use crate::app::App;
+use crate::app::{AppContext, PackSelectScreen};
 use crate::ui::theme;
 use crate::ui::widgets::BoosterPackWidget;
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &PackSelectScreen, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .margin(1)
         .split(area);
 
-    let set_name = app
+    let set_name = ctx
         .active_collection()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| app.selected_collection_id.clone());
+        .unwrap_or_else(|| ctx.selected_collection_id.clone());
 
-    let items: Vec<ListItem<'_>> = app
+    let items: Vec<ListItem<'_>> = ctx
         .pack_configs
         .iter()
         .enumerate()
         .map(|(i, cfg)| {
-            let prefix = if i == app.pack_idx { "▶ " } else { "  " };
+            let prefix = if i == screen.pack_idx { "▶ " } else { "  " };
             let (tier_badge, tier_bg) = match cfg.id.as_str() {
                 "collector-5" => ("COLLECTOR", theme::ACCENT_PURPLE),
                 "booster-10" => ("STANDARD", theme::ACCENT_GREEN),
@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.pack_idx));
+    state.select(Some(screen.pack_idx));
 
     let list = List::new(items)
         .block(theme::panel_block(format!("Choose Pack ({set_name})"), true))
@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .constraints([Constraint::Length(12), Constraint::Min(8)])
         .split(cols[1]);
 
-    let selected_pack = app.pack_configs.get(app.pack_idx);
+    let selected_pack = ctx.pack_configs.get(screen.pack_idx);
     let pack_block = theme::panel_block("Sealed Booster Preview", false);
     let pack_inner = pack_block.inner(right_rows[0]);
     frame.render_widget(pack_block, right_rows[0]);
@@ -78,7 +78,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 pack_name: &cfg.name,
                 set_name: &set_name,
                 card_count: cfg.card_count(),
-                tick: app.tick,
+                tick: ctx.tick,
                 rip_ratio: None,
             },
             pack_inner,
@@ -102,7 +102,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     };
                     let mut spans = vec![Span::styled(
                         format!("{} {:.0}%", r.short_badge(), pct),
-                        theme::rarity_style(*r, app.tick),
+                        theme::rarity_style(*r, ctx.tick),
                     )];
                     if w_idx + 1 < slot.rarity_weights.len() {
                         spans.push(Span::styled(" │ ", theme::muted_style()));

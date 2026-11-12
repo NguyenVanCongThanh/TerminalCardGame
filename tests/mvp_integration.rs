@@ -113,7 +113,7 @@ async fn live_api_image_cache_halfblocks_render_and_persistence_mvp() {
         app.on_tick();
     }
     assert!(matches!(
-        app.pack_opening.as_ref().unwrap().phase,
+        app.pack_opening_screen.state.as_ref().unwrap().phase,
         PackPhase::Revealing { .. }
     ));
 
@@ -151,7 +151,7 @@ async fn live_api_image_cache_halfblocks_render_and_persistence_mvp() {
     // Reveal all -> Summary -> Card Details -> My Collection (List + 2x2 Grid) -> Settings
     app.handle_terminal_event(key(KeyCode::Char('a')));
     assert!(matches!(
-        app.pack_opening.as_ref().unwrap().phase,
+        app.pack_opening_screen.state.as_ref().unwrap().phase,
         PackPhase::Summary { .. }
     ));
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -169,7 +169,7 @@ async fn live_api_image_cache_halfblocks_render_and_persistence_mvp() {
 
     // Toggle 2x2 grid view
     app.handle_terminal_event(key(KeyCode::Char('v')));
-    assert!(app.grid_mode);
+    assert!(app.my_collection.grid_mode);
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // Visit Universe Select & Settings

@@ -40,14 +40,24 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_header(frame, app, chunks[0]);
 
     match app.screen {
-        Screen::MainMenu => main_menu::render(frame, app, chunks[1]),
-        Screen::UniverseSelect => universe_select::render(frame, app, chunks[1]),
-        Screen::CollectionSelect => collection_select::render(frame, app, chunks[1]),
-        Screen::PackSelect => pack_select::render(frame, app, chunks[1]),
-        Screen::PackOpening => pack_opening::render(frame, app, chunks[1]),
-        Screen::MyCollection => collection_view::render(frame, app, chunks[1]),
-        Screen::CardDetails => card_details::render(frame, app, chunks[1]),
-        Screen::Settings => settings::render(frame, app, chunks[1]),
+        Screen::MainMenu => main_menu::render(frame, &app.ctx, &app.main_menu, chunks[1]),
+        Screen::UniverseSelect => {
+            universe_select::render(frame, &app.ctx, &app.universe_select, chunks[1])
+        }
+        Screen::CollectionSelect => {
+            collection_select::render(frame, &app.ctx, &app.collection_select, chunks[1])
+        }
+        Screen::PackSelect => pack_select::render(frame, &app.ctx, &app.pack_select, chunks[1]),
+        Screen::PackOpening => {
+            pack_opening::render(frame, &mut app.ctx, &app.pack_opening_screen, chunks[1])
+        }
+        Screen::MyCollection => {
+            collection_view::render(frame, &mut app.ctx, &mut app.my_collection, chunks[1])
+        }
+        Screen::CardDetails => {
+            card_details::render(frame, &mut app.ctx, &mut app.card_details, chunks[1])
+        }
+        Screen::Settings => settings::render(frame, &app.ctx, &app.settings_screen, chunks[1]),
     }
 
     render_footer(frame, app, chunks[2]);
@@ -57,21 +67,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 
     if let Some(ref modal) = app.modal {
-        render_modal_overlay(frame, modal, app.screen, area);
+        render_modal_overlay(frame, modal, app.active_controller().title(), area);
     }
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let screen_name = match app.screen {
-        Screen::MainMenu => "Main Menu",
-        Screen::UniverseSelect => "Universes",
-        Screen::CollectionSelect => "Collections",
-        Screen::PackSelect => "Pack Selection",
-        Screen::PackOpening => "Pack Opening",
-        Screen::MyCollection => "My Collection",
-        Screen::CardDetails => "Card Details",
-        Screen::Settings => "Settings",
-    };
+    let screen_name = app.active_controller().title();
 
     let universe_name = app
         .active_universe()
@@ -127,46 +128,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let compact = area.width < 105;
-    let hints: &str = match app.screen {
-        Screen::MainMenu => {
-            if compact {
-                "[↑/↓] Move  [Tab] History  [Enter] Select  [?] Help  [q] Quit"
-            } else {
-                "[↑/↓] Navigate  [Tab] History  [Enter] Select  [1-5] Quick Jump  [?] Help  [q] Quit"
-            }
-        }
-        Screen::UniverseSelect => "[↑/↓] Select Universe  [Enter] Open  [?] Help  [Esc] Back",
-        Screen::CollectionSelect => {
-            if compact {
-                "[↑/↓] Set  [Enter] Open  [s] Sync  [r] Refresh  [Esc] Back"
-            } else {
-                "[↑/↓] Select Set  [Enter] Open Packs  [s] Sync Cards  [r] Refresh Sets  [?] Help  [Esc] Back"
-            }
-        }
-        Screen::PackSelect => {
-            "[↑/↓] Choose Pack  [Enter/Space] Rip Pack!  [s] Re-sync  [?] Help  [Esc] Back"
-        }
-        Screen::PackOpening => {
-            if compact {
-                "[Space] Flip/Next  [←/→] Slot  [a] All  [d] Info  [o] Again  [Esc] Back"
-            } else {
-                "[Space/Enter] Flip/Next  [←/→] Browse  [a] Reveal All  [d] Details  [o] Open Another  [c] Collection  [Esc] Back"
-            }
-        }
-        Screen::MyCollection => {
-            if app.search_active {
-                "[Type] Filter by name/tag  [Backspace] Delete  [Enter/Esc] Done Searching"
-            } else if compact {
-                "[↑/↓] Browse  [/] Search  [s] Sort  [v] View  [Tab] Set  [f] Rarity  [Esc] Back"
-            } else {
-                "[↑/↓/←/→] Browse  [Enter] Details  [/] Search  [s] Sort  [v] List/Grid  [Tab] Set  [f] Rarity  [Esc] Back"
-            }
-        }
-        Screen::CardDetails => "[←/→] Prev / Next Card  [↑/↓] Scroll Info  [?] Help  [Esc] Back",
-        Screen::Settings => {
-            "[↑/↓] Select Option  [←/→] Change  [Enter] Activate  [?] Help  [Esc] Back"
-        }
-    };
+    let hints = app.active_controller().footer_hints(compact);
 
     let block = Block::default()
         .borders(Borders::TOP)
@@ -214,7 +176,12 @@ fn render_floating_toast(frame: &mut Frame<'_>, message: &str, is_error: bool, b
     frame.render_widget(p, toast_area);
 }
 
-fn render_modal_overlay(frame: &mut Frame<'_>, modal: &ActiveModal, screen: Screen, area: Rect) {
+fn render_modal_overlay(
+    frame: &mut Frame<'_>,
+    modal: &ActiveModal,
+    screen_title: &str,
+    area: Rect,
+) {
     match modal {
         ActiveModal::Confirm { title, message, .. } => {
             let popup = centered_rect(62, 38, area).max_clamp(44, 10, area);
@@ -250,17 +217,6 @@ fn render_modal_overlay(frame: &mut Frame<'_>, modal: &ActiveModal, screen: Scre
         ActiveModal::Help => {
             let popup = centered_rect(72, 68, area).max_clamp(52, 16, area);
             frame.render_widget(Clear, popup);
-
-            let screen_title = match screen {
-                Screen::MainMenu => "Main Menu",
-                Screen::UniverseSelect => "Universe Select",
-                Screen::CollectionSelect => "Collection Select",
-                Screen::PackSelect => "Pack Select",
-                Screen::PackOpening => "Pack Opening",
-                Screen::MyCollection => "My Collection",
-                Screen::CardDetails => "Card Details",
-                Screen::Settings => "Settings",
-            };
 
             let lines = vec![
                 Line::from(Span::styled(

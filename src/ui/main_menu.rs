@@ -7,7 +7,7 @@ use ratatui::widgets::{
     Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::app::App;
+use crate::app::{AppContext, MainMenuScreen};
 use crate::images::renderer::ImageRenderer;
 use crate::ui::theme;
 
@@ -19,18 +19,23 @@ const MENU_ITEMS: [(&str, &str); 5] = [
     ("5. Exit", "Save progress and exit to terminal"),
 ];
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &MainMenuScreen, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .margin(1)
         .split(area);
 
-    render_menu_panel(frame, app, cols[0]);
-    render_dashboard_panel(frame, app, cols[1]);
+    render_menu_panel(frame, ctx, screen, cols[0]);
+    render_dashboard_panel(frame, ctx, screen, cols[1]);
 }
 
-fn render_menu_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_menu_panel(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &MainMenuScreen,
+    area: Rect,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(9), Constraint::Min(8)])
@@ -57,7 +62,7 @@ fn render_menu_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Active Universe: ", theme::muted_style()),
             theme::pill_badge(
-                app.active_universe()
+                ctx.active_universe()
                     .map(|u| format!("{} {}", u.badge, u.name))
                     .unwrap_or_else(|| "Pokémon TCG".to_string()),
                 theme::BG_DARK,
@@ -82,7 +87,7 @@ fn render_menu_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(idx, (title, desc))| {
-            let active_row = !app.menu_focus_history && idx == app.menu_idx;
+            let active_row = !screen.focus_history && idx == screen.menu_idx;
             let marker = if active_row { "▶ " } else { "  " };
             let title_style = if active_row {
                 Style::default()
@@ -99,42 +104,47 @@ fn render_menu_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut list_state = ListState::default();
-    if !app.menu_focus_history {
-        list_state.select(Some(app.menu_idx));
+    if !screen.focus_history {
+        list_state.select(Some(screen.menu_idx));
     }
 
     let list = List::new(items)
-        .block(theme::panel_block("Navigation", !app.menu_focus_history))
+        .block(theme::panel_block("Navigation", !screen.focus_history))
         .highlight_style(Style::default().bg(theme::BG_SELECTED));
 
     frame.render_stateful_widget(list, rows[1], &mut list_state);
 }
 
-fn render_dashboard_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_dashboard_panel(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &MainMenuScreen,
+    area: Rect,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(12), Constraint::Min(7)])
         .split(area);
 
-    render_collector_profile(frame, app, rows[0]);
-    render_pack_history(frame, app, rows[1]);
+    render_collector_profile(frame, ctx, rows[0]);
+    render_pack_history(frame, ctx, screen, rows[1]);
 }
 
-fn render_collector_profile(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_collector_profile(frame: &mut Frame<'_>, ctx: &AppContext, area: Rect) {
     let block = theme::panel_block("Collector Profile & Set Progress", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let unique_owned = app.owned_cards.len();
-    let total_copies: u32 = app.owned_cards.iter().map(|o| o.quantity).sum();
-    let synced_sets = app
+    let unique_owned = ctx.owned_cards.len();
+    let total_copies: u32 = ctx.owned_cards.iter().map(|o| o.quantity).sum();
+    let synced_sets = ctx
         .cached_card_counts
         .values()
         .filter(|&&c| c > 0)
         .count();
-    let proto_name = ImageRenderer::protocol_display_name(app.renderer.active_protocol());
+    let proto_name = ImageRenderer::protocol_display_name(ctx.renderer.active_protocol());
 
-    let synced_progress: Vec<_> = app
+    let synced_progress: Vec<_> = ctx
         .collection_progress
         .iter()
         .filter(|p| p.total_cached_cards > 0)
@@ -164,15 +174,15 @@ fn render_collector_profile(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Synced Sets : ", theme::muted_style()),
             Span::styled(
-                format!("{synced_sets}/{}", app.collections.len()),
+                format!("{synced_sets}/{}", ctx.collections.len()),
                 Style::default().fg(theme::ACCENT_CYAN),
             ),
             Span::styled("  │  Cache: ", theme::muted_style()),
             Span::styled(
                 format!(
                     "{} imgs ({:.0} KB)",
-                    app.cache_stats.file_count,
-                    app.cache_stats.total_bytes as f64 / 1024.0
+                    ctx.cache_stats.file_count,
+                    ctx.cache_stats.total_bytes as f64 / 1024.0
                 ),
                 theme::primary_style(),
             ),
@@ -224,17 +234,22 @@ fn render_collector_profile(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
-fn render_pack_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let packs_opened = app.pack_history.len();
-    let title = if app.pack_history.is_empty() {
+fn render_pack_history(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &MainMenuScreen,
+    area: Rect,
+) {
+    let packs_opened = ctx.pack_history.len();
+    let title = if ctx.pack_history.is_empty() {
         "Recent Pack History (0)".to_string()
-    } else if app.menu_focus_history {
+    } else if screen.focus_history {
         format!("Recent Pack History ({packs_opened}) — [Enter] Inspect")
     } else {
         format!("Recent Pack History ({packs_opened}) — [Tab] Focus")
     };
 
-    if app.pack_history.is_empty() {
+    if ctx.pack_history.is_empty() {
         let p = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -248,7 +263,7 @@ fn render_pack_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem<'_>> = app
+    let items: Vec<ListItem<'_>> = ctx
         .pack_history
         .iter()
         .enumerate()
@@ -258,7 +273,7 @@ fn render_pack_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .get(..16)
                 .unwrap_or(&entry.opened_at)
                 .replace('T', " ");
-            let marker = if app.menu_focus_history && i == app.history_idx {
+            let marker = if screen.focus_history && i == screen.history_idx {
                 "▶ "
             } else {
                 "✦ "
@@ -276,17 +291,17 @@ fn render_pack_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    if app.menu_focus_history {
-        state.select(Some(app.history_idx));
+    if screen.focus_history {
+        state.select(Some(screen.history_idx));
     }
 
     let list = List::new(items)
-        .block(theme::panel_block(title, app.menu_focus_history))
+        .block(theme::panel_block(title, screen.focus_history))
         .highlight_style(theme::selected_row_style());
     frame.render_stateful_widget(list, area, &mut state);
 
-    if app.pack_history.len() > area.height.saturating_sub(2) as usize {
-        let mut sb_state = ScrollbarState::new(app.pack_history.len()).position(app.history_idx);
+    if ctx.pack_history.len() > area.height.saturating_sub(2) as usize {
+        let mut sb_state = ScrollbarState::new(ctx.pack_history.len()).position(screen.history_idx);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
             area,

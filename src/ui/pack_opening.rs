@@ -7,7 +7,7 @@ use ratatui::widgets::{
     ScrollbarState, Table, TableState, Wrap,
 };
 
-use crate::app::{App, PackPhase};
+use crate::app::{AppContext, PackOpeningScreen, PackPhase};
 use crate::domain::PulledCard;
 use crate::ui::theme;
 use crate::ui::widgets::{
@@ -15,8 +15,13 @@ use crate::ui::widgets::{
     render_sparkle_border_overlay,
 };
 
-pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let Some(ref state) = app.pack_opening else {
+pub fn render(
+    frame: &mut Frame<'_>,
+    ctx: &mut AppContext,
+    screen: &PackOpeningScreen,
+    area: Rect,
+) {
+    let Some(ref state) = screen.state else {
         return;
     };
 
@@ -30,7 +35,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 state.result.cards.len(),
                 ticks,
                 max_ticks,
-                app.tick,
+                ctx.tick,
                 area,
             );
         }
@@ -44,7 +49,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let pack_name = state.result.pack_config.name.clone();
             render_reveal_view(
                 frame,
-                app,
+                ctx,
                 &col_name,
                 &pack_name,
                 &cards,
@@ -58,7 +63,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let cards = state.result.cards.clone();
             let col_name = state.result.collection_name.clone();
             let pack_name = state.result.pack_config.name.clone();
-            render_summary_view(frame, app, &col_name, &pack_name, &cards, cursor, area);
+            render_summary_view(frame, ctx, &col_name, &pack_name, &cards, cursor, area);
         }
     }
 }
@@ -141,7 +146,7 @@ fn render_ripping_animation(
 #[allow(clippy::too_many_arguments)]
 fn render_reveal_view(
     frame: &mut Frame<'_>,
-    app: &mut App,
+    ctx: &mut AppContext,
     collection_name: &str,
     pack_name: &str,
     cards: &[PulledCard],
@@ -175,7 +180,7 @@ fn render_reveal_view(
             cards,
             revealed,
             cursor,
-            tick: app.tick,
+            tick: ctx.tick,
         },
         strip_inner,
     );
@@ -192,21 +197,22 @@ fn render_reveal_view(
     let is_revealed = revealed.get(cursor).copied().unwrap_or(false);
 
     if !is_revealed {
-        render_card_back(frame, main_cols[0], app.tick, &pulled.slot_label);
+        render_card_back(frame, main_cols[0], ctx.tick, &pulled.slot_label);
         render_unrevealed_info(frame, pulled, cursor, cards.len(), main_cols[1]);
     } else {
-        if let Some(slot) = app.image_slots.get_mut("main") {
+        let tick = ctx.tick;
+        if let Some(slot) = ctx.image_slots.get_mut("main") {
             render_card_artwork_frame(
                 frame,
                 main_cols[0],
                 &pulled.card,
                 slot,
-                app.tick,
+                tick,
                 flash_ticks > 0 || pulled.card.rarity.is_hit(),
             );
             if flash_ticks > 0 {
                 let flash_color = if pulled.card.rarity.is_hit() {
-                    theme::rarity_color(pulled.card.rarity, app.tick)
+                    theme::rarity_color(pulled.card.rarity, tick)
                 } else {
                     theme::ACCENT_GOLD
                 };
@@ -214,7 +220,7 @@ fn render_reveal_view(
                     frame.buffer_mut(),
                     main_cols[0],
                     flash_color,
-                    app.tick,
+                    tick,
                 );
             }
         }
@@ -223,7 +229,7 @@ fn render_reveal_view(
             pulled,
             cursor,
             cards.len(),
-            app.tick,
+            tick,
             main_cols[1],
         );
     }
@@ -231,7 +237,7 @@ fn render_reveal_view(
 
 fn render_summary_view(
     frame: &mut Frame<'_>,
-    app: &mut App,
+    ctx: &mut AppContext,
     collection_name: &str,
     pack_name: &str,
     cards: &[PulledCard],
@@ -276,7 +282,7 @@ fn render_summary_view(
         Span::styled("  │  ", theme::muted_style()),
         Span::styled(
             format!("Best: {}", best_rarity.label()),
-            theme::rarity_style(best_rarity, app.tick),
+            theme::rarity_style(best_rarity, ctx.tick),
         ),
     ]);
     let header_block = theme::colored_panel_block("Pack Pull Summary", theme::ACCENT_GOLD);
@@ -310,7 +316,7 @@ fn render_summary_view(
             Row::new(vec![
                 Cell::from(format!("{marker} {}", i + 1)).style(theme::muted_style()),
                 Cell::from(p.card.rarity.short_badge())
-                    .style(theme::rarity_style(p.card.rarity, app.tick)),
+                    .style(theme::rarity_style(p.card.rarity, ctx.tick)),
                 Cell::from(p.card.name.clone()).style(theme::primary_style()),
                 Cell::from(p.slot_label.clone()).style(theme::muted_style()),
                 Cell::from(status),
@@ -360,8 +366,9 @@ fn render_summary_view(
     .block(theme::panel_block("Actions", false));
     frame.render_widget(action_bar, left_rows[1]);
 
+    let tick = ctx.tick;
     if let Some(pulled) = cards.get(cursor)
-        && let Some(slot) = app.image_slots.get_mut("main")
+        && let Some(slot) = ctx.image_slots.get_mut("main")
     {
         let badge = if pulled.is_new {
             "★ NEW!".to_string()
@@ -373,7 +380,7 @@ fn render_summary_view(
             cols[1],
             &pulled.card,
             slot,
-            app.tick,
+            tick,
             true,
             Some(&badge),
         );

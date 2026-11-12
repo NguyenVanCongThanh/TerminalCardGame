@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{AppContext, SettingsScreen};
 use crate::images::renderer::ImageRenderer;
 use crate::ui::theme;
 
@@ -14,7 +14,7 @@ enum SettingValueKind {
     Action(String),
 }
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &SettingsScreen, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
@@ -24,30 +24,30 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = [
         (
             "Image Rendering Protocol",
-            SettingValueKind::Selector(app.settings.protocol_mode.label().to_string()),
+            SettingValueKind::Selector(ctx.settings.protocol_mode.label().to_string()),
             "Use [←/→] to choose Auto-Detect or force Half-Blocks, Kitty, Sixel, or iTerm2.",
         ),
         (
             "Card Artwork Quality",
-            SettingValueKind::Selector(app.settings.image_quality.label().to_string()),
+            SettingValueKind::Selector(ctx.settings.image_quality.label().to_string()),
             "Use [←/→] to toggle High (600x825 PNG) or Low / Fast (245x337 PNG).",
         ),
         (
             "Fast Pack Animations",
-            SettingValueKind::Toggle(app.settings.fast_animations),
+            SettingValueKind::Toggle(ctx.settings.fast_animations),
             "Use [←/→] or [Enter] to shorten the foil-rip opening animation.",
         ),
         (
             "Cards Synced Per Set",
-            SettingValueKind::Selector(format!("{} cards", app.settings.cards_per_sync)),
+            SettingValueKind::Selector(format!("{} cards", ctx.settings.cards_per_sync)),
             "Use [←/→] to choose sample size (16 / 28 / 40 / 60) when syncing a set.",
         ),
         (
             "Clear Local Image Cache",
             SettingValueKind::Action(format!(
                 "{} files ({:.1} KB)",
-                app.cache_stats.file_count,
-                app.cache_stats.total_bytes as f64 / 1024.0
+                ctx.cache_stats.file_count,
+                ctx.cache_stats.total_bytes as f64 / 1024.0
             )),
             "Press [Enter] to open confirmation dialog before deleting cached PNGs.",
         ),
@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(idx, (name, kind, desc))| {
-            let prefix = if idx == app.settings_idx { "▶ " } else { "  " };
+            let prefix = if idx == screen.idx { "▶ " } else { "  " };
             let value_span = match kind {
                 SettingValueKind::Selector(v) => Span::styled(
                     format!("< {v} >"),
@@ -93,16 +93,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.settings_idx));
+    state.select(Some(screen.idx));
 
     let list = List::new(items)
         .block(theme::panel_block("Settings", true))
         .highlight_style(Style::default().bg(theme::BG_SELECTED));
     frame.render_stateful_widget(list, cols[0], &mut state);
 
-    let detected = ImageRenderer::protocol_display_name(app.renderer.detected_protocol());
-    let active = ImageRenderer::protocol_display_name(app.renderer.active_protocol());
-    let (fw, fh) = app.renderer.font_size();
+    let detected = ImageRenderer::protocol_display_name(ctx.renderer.detected_protocol());
+    let active = ImageRenderer::protocol_display_name(ctx.renderer.active_protocol());
+    let (fw, fh) = ctx.renderer.font_size();
 
     let info_lines = vec![
         Line::from(""),

@@ -4,17 +4,22 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{AppContext, UniverseSelectScreen};
 use crate::ui::theme;
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &UniverseSelectScreen,
+    area: Rect,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .margin(1)
         .split(area);
 
-    let items: Vec<ListItem<'_>> = app
+    let items: Vec<ListItem<'_>> = ctx
         .universes
         .iter()
         .enumerate()
@@ -24,7 +29,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 theme::pill_badge("COMING SOON", theme::TEXT_MUTED, theme::BG_SELECTED)
             };
-            let prefix = if i == app.universe_idx { "▶ " } else { "  " };
+            let prefix = if i == screen.universe_idx { "▶ " } else { "  " };
             ListItem::new(vec![
                 Line::from(vec![
                     Span::styled(
@@ -48,14 +53,14 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.universe_idx));
+    state.select(Some(screen.universe_idx));
 
     let list = List::new(items)
         .block(theme::panel_block("Select Card Universe", true))
         .highlight_style(Style::default().bg(theme::BG_SELECTED));
     frame.render_stateful_widget(list, cols[0], &mut state);
 
-    let detail_lines = if let Some(u) = app.universes.get(app.universe_idx) {
+    let detail_lines = if let Some(u) = ctx.universes.get(screen.universe_idx) {
         let mut lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -82,12 +87,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ];
 
         if u.is_implemented {
-            let owned_in_u = app
+            let owned_in_u = ctx
                 .owned_cards
                 .iter()
                 .filter(|o| o.card.universe_id == u.id)
                 .count();
-            let packs_in_u = app
+            let packs_in_u = ctx
                 .pack_history
                 .iter()
                 .filter(|p| p.universe_id == u.id)
@@ -99,7 +104,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
             lines.push(Line::from(vec![
                 Span::styled("  Available Sets : ", theme::muted_style()),
-                Span::styled(format!("{}", app.collections.len()), theme::primary_style()),
+                Span::styled(format!("{}", ctx.collections.len()), theme::primary_style()),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  Unique Owned   : ", theme::muted_style()),

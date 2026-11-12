@@ -7,11 +7,16 @@ use ratatui::widgets::{
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::app::App;
+use crate::app::{AppContext, CollectionSelectScreen};
 use crate::domain::Rarity;
 use crate::ui::theme;
 
-pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub fn render(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &CollectionSelectScreen,
+    area: Rect,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
@@ -19,21 +24,21 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .split(area);
 
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let spin = spinner[(app.tick as usize) % spinner.len()];
+    let spin = spinner[(ctx.tick as usize) % spinner.len()];
 
-    let items: Vec<ListItem<'_>> = app
+    let items: Vec<ListItem<'_>> = ctx
         .collections
         .iter()
         .enumerate()
         .map(|(idx, col)| {
-            let cached = app.cached_card_counts.get(&col.id).copied().unwrap_or(0);
-            let prog = app
+            let cached = ctx.cached_card_counts.get(&col.id).copied().unwrap_or(0);
+            let prog = ctx
                 .collection_progress
                 .iter()
                 .find(|p| p.collection_id == col.id);
             let owned = prog.map(|p| p.unique_owned).unwrap_or(0);
 
-            let badge = if app.syncing_collection_id.as_deref() == Some(&col.id) {
+            let badge = if ctx.syncing_collection_id.as_deref() == Some(&col.id) {
                 theme::pill_badge(format!("{spin} SYNCING"), theme::BG_DARK, theme::ACCENT_GOLD)
             } else if cached > 0 {
                 theme::pill_badge(
@@ -45,7 +50,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 theme::pill_badge("ENTER TO SYNC", theme::BG_DARK, theme::ACCENT_CYAN)
             };
 
-            let prefix = if idx == app.collection_idx { "▶ " } else { "  " };
+            let prefix = if idx == screen.collection_idx {
+                "▶ "
+            } else {
+                "  "
+            };
             let release = col.release_date.as_deref().unwrap_or("Unknown");
             ListItem::new(vec![
                 Line::from(vec![
@@ -69,9 +78,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.collection_idx));
+    state.select(Some(screen.collection_idx));
 
-    let title = if app.syncing_collections_list {
+    let title = if ctx.syncing_collections_list {
         format!("Collections ({spin} Refreshing...)")
     } else {
         "Select Collection / Card Set".to_string()
@@ -82,8 +91,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .highlight_style(Style::default().bg(theme::BG_SELECTED));
     frame.render_stateful_widget(list, cols[0], &mut state);
 
-    if app.collections.len() * 2 > cols[0].height.saturating_sub(2) as usize {
-        let mut sb = ScrollbarState::new(app.collections.len()).position(app.collection_idx);
+    if ctx.collections.len() * 2 > cols[0].height.saturating_sub(2) as usize {
+        let mut sb = ScrollbarState::new(ctx.collections.len()).position(screen.collection_idx);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
             cols[0],
@@ -96,12 +105,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let right_inner = right_block.inner(cols[1]);
     frame.render_widget(right_block, cols[1]);
 
-    let Some(col) = app.collections.get(app.collection_idx) else {
+    let Some(col) = ctx.collections.get(screen.collection_idx) else {
         return;
     };
 
-    let cached = app.cached_card_counts.get(&col.id).copied().unwrap_or(0);
-    let prog = app
+    let cached = ctx.cached_card_counts.get(&col.id).copied().unwrap_or(0);
+    let prog = ctx
         .collection_progress
         .iter()
         .find(|p| p.collection_id == col.id);
@@ -133,7 +142,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Cached Pool : ", theme::muted_style()),
             Span::styled(
-                format!("{cached} cards (sync limit: {})", app.settings.cards_per_sync),
+                format!("{cached} cards (sync limit: {})", ctx.settings.cards_per_sync),
                 theme::primary_style(),
             ),
         ]),
@@ -162,8 +171,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let bars: Vec<Bar<'_>> = Rarity::all()
             .iter()
             .map(|&rarity| {
-                let count = app.cached_rarity_counts.get(&rarity).copied().unwrap_or(0) as u64;
-                let color = theme::rarity_color(rarity, app.tick);
+                let count = ctx.cached_rarity_counts.get(&rarity).copied().unwrap_or(0) as u64;
+                let color = theme::rarity_color(rarity, ctx.tick);
                 let short_lbl = match rarity {
                     Rarity::Common => "Com",
                     Rarity::Uncommon => "Unc",

@@ -119,7 +119,7 @@ async fn settings_clear_cache_requires_modal_confirmation() {
     for _ in 0..4 {
         app.handle_terminal_event(key(KeyCode::Down));
     }
-    assert_eq!(app.settings_idx, 4);
+    assert_eq!(app.settings_screen.idx, 4);
 
     // Left/Right must NOT open confirm or clear cache accidentally
     app.handle_terminal_event(key(KeyCode::Right));
@@ -157,28 +157,34 @@ async fn help_modal_toggles_and_collection_search_sort_work() {
     // Enter My Collection
     app.handle_terminal_event(key(KeyCode::Char('3')));
     assert_eq!(app.screen, Screen::MyCollection);
-    assert_eq!(app.filtered_owned_cards().len(), 2);
+    assert_eq!(app.my_collection.filtered_owned_cards(&app.owned_cards).len(), 2);
 
     // Cycle sort
     app.handle_terminal_event(key(KeyCode::Char('s')));
-    assert_eq!(app.sort_mode, CollectionSort::RarityDesc);
-    assert_eq!(app.filtered_owned_cards()[0].card.name, "Charizard");
+    assert_eq!(app.my_collection.sort_mode, CollectionSort::RarityDesc);
+    assert_eq!(
+        app.my_collection.filtered_owned_cards(&app.owned_cards)[0].card.name,
+        "Charizard"
+    );
 
     // Live search '/'
     app.handle_terminal_event(key(KeyCode::Char('/')));
-    assert!(app.search_active);
+    assert!(app.my_collection.search_active);
     for ch in "pika".chars() {
         app.handle_terminal_event(key(KeyCode::Char(ch)));
     }
-    assert_eq!(app.filtered_owned_cards().len(), 1);
-    assert_eq!(app.filtered_owned_cards()[0].card.name, "Pikachu");
+    assert_eq!(app.my_collection.filtered_owned_cards(&app.owned_cards).len(), 1);
+    assert_eq!(
+        app.my_collection.filtered_owned_cards(&app.owned_cards)[0].card.name,
+        "Pikachu"
+    );
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
 
     // Exit search and clear
     app.handle_terminal_event(key(KeyCode::Enter));
-    assert!(!app.search_active);
+    assert!(!app.my_collection.search_active);
     app.handle_terminal_event(key(KeyCode::Char('x')));
-    assert_eq!(app.filtered_owned_cards().len(), 2);
+    assert_eq!(app.my_collection.filtered_owned_cards(&app.owned_cards).len(), 2);
 
     // Open Card Details & test scrolling
     app.handle_terminal_event(key(KeyCode::Enter));
@@ -211,7 +217,7 @@ async fn pack_opening_and_wide_grid_render_cleanly() {
     // Skip ripping -> Revealing -> Flip -> Summary
     app.handle_terminal_event(key(KeyCode::Char(' ')));
     assert!(matches!(
-        app.pack_opening.as_ref().unwrap().phase,
+        app.pack_opening_screen.state.as_ref().unwrap().phase,
         PackPhase::Revealing { .. }
     ));
     wide_term.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -221,7 +227,7 @@ async fn pack_opening_and_wide_grid_render_cleanly() {
 
     app.handle_terminal_event(key(KeyCode::Char('a')));
     assert!(matches!(
-        app.pack_opening.as_ref().unwrap().phase,
+        app.pack_opening_screen.state.as_ref().unwrap().phase,
         PackPhase::Summary { .. }
     ));
     wide_term.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -230,7 +236,7 @@ async fn pack_opening_and_wide_grid_render_cleanly() {
     app.handle_terminal_event(key(KeyCode::Char('c')));
     app.handle_terminal_event(key(KeyCode::Char('v')));
     wide_term.draw(|f| ui::render(f, &mut app)).unwrap();
-    assert_eq!(app.grid_page_size, 6);
+    assert_eq!(app.my_collection.grid_page_size, 6);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

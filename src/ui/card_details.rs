@@ -4,12 +4,17 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
-use crate::app::App;
+use crate::app::{AppContext, CardDetailsScreen};
 use crate::ui::theme;
 use crate::ui::widgets::render_card_artwork_frame;
 
-pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let Some(item) = app.detail_cards.get(app.detail_idx).cloned() else {
+pub fn render(
+    frame: &mut Frame<'_>,
+    ctx: &mut AppContext,
+    screen: &mut CardDetailsScreen,
+    area: Rect,
+) {
+    let Some(item) = screen.cards.get(screen.idx).cloned() else {
         return;
     };
 
@@ -19,12 +24,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .margin(1)
         .split(area);
 
-    if let Some(slot) = app.image_slots.get_mut("main") {
-        render_card_artwork_frame(frame, cols[0], &item.card, slot, app.tick, true);
+    let tick = ctx.tick;
+    if let Some(slot) = ctx.image_slots.get_mut("main") {
+        render_card_artwork_frame(frame, cols[0], &item.card, slot, tick, true);
     }
 
     let card = &item.card;
-    let r_color = theme::rarity_color(card.rarity, app.tick);
+    let r_color = theme::rarity_color(card.rarity, tick);
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -144,23 +150,23 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     let title = format!(
         "Card Inspector ({} / {})",
-        app.detail_idx + 1,
-        app.detail_cards.len()
+        screen.idx + 1,
+        screen.cards.len()
     );
 
     let total_lines = lines.len() as u16;
     let visible_h = cols[1].height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(visible_h);
-    app.detail_scroll = app.detail_scroll.min(max_scroll);
+    screen.scroll = screen.scroll.min(max_scroll);
 
     let panel = Paragraph::new(lines)
         .wrap(Wrap { trim: true })
-        .scroll((app.detail_scroll, 0))
+        .scroll((screen.scroll, 0))
         .block(theme::colored_panel_block(title, r_color));
     frame.render_widget(panel, cols[1]);
 
     if total_lines > visible_h {
-        let mut sb = ScrollbarState::new(max_scroll as usize + 1).position(app.detail_scroll as usize);
+        let mut sb = ScrollbarState::new(max_scroll as usize + 1).position(screen.scroll as usize);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
             cols[1],

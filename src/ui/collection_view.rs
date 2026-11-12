@@ -7,22 +7,27 @@ use ratatui::widgets::{
     ScrollbarState, Table, TableState, Tabs, Wrap,
 };
 
-use crate::app::App;
+use crate::app::{AppContext, MyCollectionScreen};
 use crate::ui::theme;
 use crate::ui::widgets::{render_card_artwork_frame, render_card_artwork_frame_with_badge};
 
-pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+pub fn render(
+    frame: &mut Frame<'_>,
+    ctx: &mut AppContext,
+    screen: &mut MyCollectionScreen,
+    area: Rect,
+) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(10)])
         .margin(1)
         .split(area);
 
-    render_filter_and_search_bar(frame, app, outer[0]);
+    render_filter_and_search_bar(frame, ctx, screen, outer[0]);
 
-    let filtered_empty = app.filtered_owned_cards().is_empty();
+    let filtered_empty = screen.filtered_owned_cards(&ctx.owned_cards).is_empty();
     if filtered_empty {
-        let msg = if app.owned_cards.is_empty() {
+        let msg = if ctx.owned_cards.is_empty() {
             "Your collection is empty! Return to Main Menu -> Open Packs to collect cards."
         } else {
             "No cards match the active filters/search. Press [Tab], [f], or [/] to adjust."
@@ -37,15 +42,20 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
 
-    if app.grid_mode {
-        render_grid_view(frame, app, outer[1]);
+    if screen.grid_mode {
+        render_grid_view(frame, ctx, screen, outer[1]);
     } else {
-        render_list_and_preview(frame, app, outer[1]);
+        render_list_and_preview(frame, ctx, screen, outer[1]);
     }
 }
 
-fn render_filter_and_search_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let block = theme::panel_block("Filter, Search & Vault Progress", app.search_active);
+fn render_filter_and_search_bar(
+    frame: &mut Frame<'_>,
+    ctx: &AppContext,
+    screen: &MyCollectionScreen,
+    area: Rect,
+) {
+    let block = theme::panel_block("Filter, Search & Vault Progress", screen.search_active);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -61,9 +71,9 @@ fn render_filter_and_search_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Row 1: Set filter Tabs
     let mut tab_titles = vec![Line::from(" All Sets ")];
     let mut selected_tab = 0usize;
-    for (idx, col) in app.collections.iter().enumerate() {
+    for (idx, col) in ctx.collections.iter().enumerate() {
         tab_titles.push(Line::from(format!(" {} ", col.name)));
-        if app.collection_filter.as_deref() == Some(col.id.as_str()) {
+        if screen.collection_filter.as_deref() == Some(col.id.as_str()) {
             selected_tab = idx + 1;
         }
     }
@@ -80,24 +90,24 @@ fn render_filter_and_search_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(tabs, rows[0]);
 
     // Row 2: Search input + Rarity + Sort + View badges
-    let rarity_label = app
+    let rarity_label = screen
         .rarity_filter
         .map(|r| r.label().to_string())
         .unwrap_or_else(|| "All Rarities".to_string());
-    let view_label = if app.grid_mode { "Grid" } else { "List" };
-    let search_display = if app.search_active {
-        format!(" / {}█ ", app.search_query)
-    } else if app.search_query.is_empty() {
+    let view_label = if screen.grid_mode { "Grid" } else { "List" };
+    let search_display = if screen.search_active {
+        format!(" / {}█ ", screen.search_query)
+    } else if screen.search_query.is_empty() {
         " [/] Search... ".to_string()
     } else {
-        format!(" / {} [x:clr] ", app.search_query)
+        format!(" / {} [x:clr] ", screen.search_query)
     };
-    let search_style = if app.search_active {
+    let search_style = if screen.search_active {
         Style::default()
             .fg(theme::BG_DARK)
             .bg(theme::ACCENT_GOLD)
             .add_modifier(Modifier::BOLD)
-    } else if !app.search_query.is_empty() {
+    } else if !screen.search_query.is_empty() {
         Style::default()
             .fg(theme::ACCENT_GOLD)
             .bg(theme::BG_SELECTED)
@@ -111,17 +121,20 @@ fn render_filter_and_search_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled("Rarity [f]: ", theme::muted_style()),
         Span::styled(rarity_label, Style::default().fg(theme::ACCENT_GOLD)),
         Span::styled("  │  Sort [s]: ", theme::muted_style()),
-        Span::styled(app.sort_mode.label(), Style::default().fg(theme::ACCENT_CYAN)),
+        Span::styled(
+            screen.sort_mode.label(),
+            Style::default().fg(theme::ACCENT_CYAN),
+        ),
         Span::styled("  │  View [v]: ", theme::muted_style()),
         Span::styled(view_label, Style::default().fg(theme::ACCENT_GREEN)),
     ]);
     frame.render_widget(Paragraph::new(controls_line), rows[1]);
 
     // Row 3: Count & active set progress
-    let total_unique = app.owned_cards.len();
-    let total_copies: u32 = app.owned_cards.iter().map(|o| o.quantity).sum();
-    let shown = app.filtered_owned_cards().len();
-    let progress_summary: String = app
+    let total_unique = ctx.owned_cards.len();
+    let total_copies: u32 = ctx.owned_cards.iter().map(|o| o.quantity).sum();
+    let shown = screen.filtered_owned_cards(&ctx.owned_cards).len();
+    let progress_summary: String = ctx
         .collection_progress
         .iter()
         .filter(|p| p.total_cached_cards > 0)
@@ -148,19 +161,25 @@ fn render_filter_and_search_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn render_list_and_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+fn render_list_and_preview(
+    frame: &mut Frame<'_>,
+    ctx: &mut AppContext,
+    screen: &MyCollectionScreen,
+    area: Rect,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(area);
 
-    let filtered = app.filtered_owned_cards();
+    let tick = ctx.tick;
+    let filtered = screen.filtered_owned_cards(&ctx.owned_cards);
     let total = filtered.len();
     let rows: Vec<Row<'_>> = filtered
         .iter()
         .enumerate()
         .map(|(idx, owned)| {
-            let prefix = if idx == app.owned_cursor { "▶" } else { " " };
+            let prefix = if idx == screen.owned_cursor { "▶" } else { " " };
             let market = owned
                 .card
                 .metadata
@@ -173,7 +192,7 @@ fn render_list_and_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(prefix).style(Style::default().fg(theme::ACCENT_GOLD)),
                 Cell::from(owned.card.rarity.short_badge())
-                    .style(theme::rarity_style(owned.card.rarity, app.tick)),
+                    .style(theme::rarity_style(owned.card.rarity, tick)),
                 Cell::from(owned.card.name.clone()).style(theme::primary_style()),
                 Cell::from(format!("{} #{}", owned.card.collection_id, owned.card.card_number))
                     .style(theme::muted_style()),
@@ -188,7 +207,7 @@ fn render_list_and_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .collect();
 
     let mut state = TableState::default();
-    state.select(Some(app.owned_cursor));
+    state.select(Some(screen.owned_cursor));
 
     let table = Table::new(
         rows,
@@ -203,11 +222,11 @@ fn render_list_and_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     )
     .header(Row::new(vec!["", "Tier", "Card Name", "Set #", "Qty", "Value"]).style(theme::title_style()))
     .row_highlight_style(theme::selected_row_style())
-    .block(theme::panel_block("Owned Cards", !app.search_active));
+    .block(theme::panel_block("Owned Cards", !screen.search_active));
     frame.render_stateful_widget(table, cols[0], &mut state);
 
     if total > cols[0].height.saturating_sub(3) as usize {
-        let mut sb = ScrollbarState::new(total).position(app.owned_cursor);
+        let mut sb = ScrollbarState::new(total).position(screen.owned_cursor);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
             cols[0],
@@ -215,14 +234,19 @@ fn render_list_and_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         );
     }
 
-    if let Some(selected_card) = filtered.get(app.owned_cursor).map(|o| o.card.clone())
-        && let Some(slot) = app.image_slots.get_mut("preview")
+    if let Some(selected_card) = filtered.get(screen.owned_cursor).map(|o| o.card.clone())
+        && let Some(slot) = ctx.image_slots.get_mut("preview")
     {
-        render_card_artwork_frame(frame, cols[1], &selected_card, slot, app.tick, true);
+        render_card_artwork_frame(frame, cols[1], &selected_card, slot, tick, true);
     }
 }
 
-fn render_grid_view(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+fn render_grid_view(
+    frame: &mut Frame<'_>,
+    ctx: &mut AppContext,
+    screen: &mut MyCollectionScreen,
+    area: Rect,
+) {
     // Responsive grid dimensions based on terminal size
     let (grid_cols, grid_rows) = if area.width >= 156 && area.height >= 24 {
         (3usize, 2usize)
@@ -232,16 +256,17 @@ fn render_grid_view(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         (2usize, 2usize)
     };
     let page_size = grid_cols * grid_rows;
-    app.sync_grid_page_size(page_size);
+    screen.sync_grid_page_size(page_size, ctx);
 
-    let filtered_cards: Vec<(crate::domain::Card, u32)> = app
-        .filtered_owned_cards()
+    let tick = ctx.tick;
+    let filtered_cards: Vec<(crate::domain::Card, u32)> = screen
+        .filtered_owned_cards(&ctx.owned_cards)
         .into_iter()
         .map(|o| (o.card.clone(), o.quantity))
         .collect();
     let total = filtered_cards.len();
-    let page_start = (app.owned_cursor / page_size) * page_size;
-    let page_num = (app.owned_cursor / page_size) + 1;
+    let page_start = (screen.owned_cursor / page_size) * page_size;
+    let page_num = (screen.owned_cursor / page_size) + 1;
     let total_pages = total.div_ceil(page_size);
 
     let outer = Layout::default()
@@ -269,16 +294,16 @@ fn render_grid_view(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     for (offset, cell_area) in cells.into_iter().enumerate() {
         let abs_idx = page_start + offset;
         if let Some((card, qty)) = filtered_cards.get(abs_idx) {
-            let focused = abs_idx == app.owned_cursor;
+            let focused = abs_idx == screen.owned_cursor;
             let slot_key = format!("grid-{offset}");
             let badge = format!("x{qty}");
-            if let Some(slot) = app.image_slots.get_mut(&slot_key) {
+            if let Some(slot) = ctx.image_slots.get_mut(&slot_key) {
                 render_card_artwork_frame_with_badge(
                     frame,
                     cell_area,
                     card,
                     slot,
-                    app.tick,
+                    tick,
                     focused,
                     Some(&badge),
                 );
@@ -296,7 +321,7 @@ fn render_grid_view(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let pager = Paragraph::new(Line::from(Span::styled(
         format!(
             " Grid Page {page_num}/{total_pages} ({grid_cols}×{grid_rows})  •  Card {}/{total}  •  [Enter] Details",
-            app.owned_cursor + 1
+            screen.owned_cursor + 1
         ),
         theme::muted_style(),
     )))
