@@ -22,8 +22,7 @@ impl ImageRenderer {
     pub fn detect(mode: ProtocolMode) -> Self {
         use std::io::IsTerminal;
 
-        let should_probe = mode != ProtocolMode::Halfblocks
-            && std::io::stdin().is_terminal()
+        let should_probe = std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
             && std::env::var("TERM").as_deref() != Ok("dumb");
 

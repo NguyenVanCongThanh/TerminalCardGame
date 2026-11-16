@@ -56,24 +56,27 @@ pub fn render(
                 "  "
             };
             let release = col.release_date.as_deref().unwrap_or("Unknown");
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!("{prefix}{} ", col.name),
-                        Style::default()
-                            .fg(theme::TEXT_PRIMARY)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    badge,
-                ]),
-                Line::from(Span::styled(
-                    format!(
-                        "  Series: {} • Released: {} • Full Set: {} cards",
-                        col.series, release, col.total_cards_in_set
-                    ),
+            let meta_str = format!(
+                "Series: {} • Released: {} • Full Set: {} cards",
+                col.series, release, col.total_cards_in_set
+            );
+            let sub_max_w = cols[0].width.saturating_sub(6) as usize;
+            let mut item_lines = vec![Line::from(vec![
+                Span::styled(
+                    format!("{prefix}{} ", col.name),
+                    Style::default()
+                        .fg(theme::TEXT_PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                badge,
+            ])];
+            for sub_line in theme::wrap_plain_text(&meta_str, sub_max_w.max(12)) {
+                item_lines.push(Line::from(Span::styled(
+                    format!("  {sub_line}"),
                     theme::muted_style(),
-                )),
-            ])
+                )));
+            }
+            ListItem::new(item_lines)
         })
         .collect();
 
@@ -194,6 +197,11 @@ pub fn render(
             })
             .collect();
 
+        let (bar_w, bar_gap) = if sections[2].width < 38 {
+            (3, 1)
+        } else {
+            (4, 2)
+        };
         let chart = BarChart::default()
             .block(
                 ratatui::widgets::Block::default()
@@ -202,13 +210,17 @@ pub fn render(
                     .title(Span::styled(" Pool Rarity Breakdown ", theme::muted_style())),
             )
             .data(BarGroup::default().bars(&bars))
-            .bar_width(4)
-            .bar_gap(2);
+            .bar_width(bar_w)
+            .bar_gap(bar_gap);
         frame.render_widget(chart, sections[2]);
     } else {
+        let universe_name = ctx
+            .active_universe()
+            .map(|u| u.name.as_str())
+            .unwrap_or("the provider");
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "Press [Enter] or [s] to fetch card metadata & artwork from TCGdex!",
+                format!("Press [Enter] or [s] to sync card metadata & artwork for {universe_name}!"),
                 Style::default().fg(theme::ACCENT_CYAN),
             ))
             .wrap(Wrap { trim: true }),

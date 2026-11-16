@@ -9,6 +9,16 @@ pub struct CollectionSelectScreen {
 }
 
 impl CollectionSelectScreen {
+    pub fn sync_cursor_to(&mut self, ctx: &AppContext) {
+        if let Some(pos) = ctx
+            .collections
+            .iter()
+            .position(|c| c.id == ctx.selected_collection_id)
+        {
+            self.collection_idx = pos;
+        }
+    }
+
     fn sync_selected_collection(&self, ctx: &mut AppContext) {
         if let Some(col) = ctx.collections.get(self.collection_idx) {
             ctx.selected_collection_id = col.id.clone();
@@ -35,7 +45,7 @@ impl ScreenController for CollectionSelectScreen {
     }
 
     fn on_enter(&mut self, ctx: &mut AppContext) {
-        ctx.refresh_cached_stats(None);
+        ctx.refresh_cached_stats();
         if self.collection_idx >= ctx.collections.len() {
             self.collection_idx = 0;
         }

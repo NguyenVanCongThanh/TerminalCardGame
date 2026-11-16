@@ -19,9 +19,7 @@ impl SettingsScreen {
                     ctx.settings.protocol_mode.prev()
                 };
                 ctx.renderer.set_mode(ctx.settings.protocol_mode);
-                for slot in ctx.image_slots.values_mut() {
-                    slot.clear();
-                }
+                ctx.invalidate_image_slots();
                 let _ = ctx.store.save_settings(&ctx.settings);
                 ctx.set_banner(
                     format!(
@@ -33,6 +31,7 @@ impl SettingsScreen {
             }
             1 => {
                 ctx.settings.image_quality = ctx.settings.image_quality.toggle();
+                ctx.invalidate_image_slots();
                 let _ = ctx.store.save_settings(&ctx.settings);
                 ctx.set_banner(
                     format!("Artwork quality: {}", ctx.settings.image_quality.label()),

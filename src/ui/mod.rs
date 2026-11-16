@@ -13,7 +13,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 
 use crate::app::{ActiveModal, App, Screen};
 use crate::images::renderer::ImageRenderer;
@@ -49,7 +52,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         }
         Screen::PackSelect => pack_select::render(frame, &app.ctx, &app.pack_select, chunks[1]),
         Screen::PackOpening => {
-            pack_opening::render(frame, &mut app.ctx, &app.pack_opening_screen, chunks[1])
+            pack_opening::render(frame, &mut app.ctx, &mut app.pack_opening_screen, chunks[1])
         }
         Screen::MyCollection => {
             collection_view::render(frame, &mut app.ctx, &mut app.my_collection, chunks[1])
@@ -66,8 +69,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         render_floating_toast(frame, banner.message.as_str(), banner.is_error, chunks[1]);
     }
 
-    if let Some(ref modal) = app.modal {
-        render_modal_overlay(frame, modal, app.active_controller().title(), area);
+    if let Some(modal) = app.modal.clone() {
+        let title = app.active_controller().title();
+        render_modal_overlay(frame, &modal, title, &mut app.ctx.help_scroll, area);
     }
 }
 
@@ -77,7 +81,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let universe_name = app
         .active_universe()
         .map(|u| format!("{} {}", u.badge, u.name))
-        .unwrap_or_else(|| "Pokémon".to_string());
+        .unwrap_or_else(|| "Card Vault".to_string());
 
     let proto = ImageRenderer::protocol_display_name(app.renderer.active_protocol());
     let unique_owned = app.owned_cards.len();
@@ -180,6 +184,7 @@ fn render_modal_overlay(
     frame: &mut Frame<'_>,
     modal: &ActiveModal,
     screen_title: &str,
+    help_scroll: &mut u16,
     area: Rect,
 ) {
     match modal {
@@ -227,32 +232,54 @@ fn render_modal_overlay(
                 )),
                 Line::from(""),
                 Line::from(Span::styled("Global Shortcuts", theme::title_style())),
-                Line::from("  [?]             Toggle this Help modal"),
-                Line::from("  [Esc / q]       Go back / Close modal"),
-                Line::from("  [Ctrl+C]        Quit immediately"),
+                Line::from("  [?]                 Open this Help modal"),
+                Line::from("  [↑/↓ / j/k / PgUp/Dn] Scroll modal / lists / details"),
+                Line::from("  [Esc / q]           Go back / Close modal"),
+                Line::from("  [Ctrl+C]            Quit immediately"),
+                Line::from(""),
+                Line::from(Span::styled("Main Menu & Collections", theme::title_style())),
+                Line::from("  [Tab]               Focus Pack History (Main Menu)"),
+                Line::from("  [s] / [r]           Sync cards / Refresh sets (Collections)"),
                 Line::from(""),
                 Line::from(Span::styled("Pack Opening", theme::title_style())),
-                Line::from("  [Space / Enter] Flip current card / Advance slot"),
-                Line::from("  [a]             Reveal all remaining cards & view summary"),
-                Line::from("  [← / →]         Browse card slots"),
-                Line::from("  [d] / [o] / [c] Details / Open another / My Collection"),
+                Line::from("  [Space / Enter]     Skip rip, flip card, or advance"),
+                Line::from("  [a]                 Reveal all remaining cards"),
+                Line::from("  [← / → / h / l]     Browse card slots"),
+                Line::from("  [d] / [o] / [c]     Details / Open another / Vault (Summary)"),
                 Line::from(""),
                 Line::from(Span::styled("My Collection", theme::title_style())),
-                Line::from("  [/]             Live search by name, #, rarity, or tag"),
-                Line::from("  [s]             Cycle sort (Newest, Rarity, Qty, Set #, A-Z)"),
-                Line::from("  [v] / [Tab] / [f] Toggle List/Grid, Filter Set, Filter Rarity"),
+                Line::from("  [/]  /  [x]         Live search / Clear active search"),
+                Line::from("  [s]                 Cycle sort (Newest, Rarity, Qty, #, A-Z)"),
+                Line::from("  [v] / [Tab] / [f]   Toggle List/Grid, Filter Set, Filter Rarity"),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Press [Esc], [Enter], or [?] to close",
+                    "Press [Esc], [Enter], [q], or [?] to close",
                     theme::muted_style(),
                 )),
             ];
 
             let block = theme::colored_panel_block(" Keyboard Shortcuts & Guide ", theme::ACCENT_CYAN);
+            let inner = block.inner(popup);
+            let total_lines = theme::wrapped_line_count(&lines, inner.width);
+            let visible_h = inner.height;
+            let max_scroll = total_lines.saturating_sub(visible_h);
+            *help_scroll = (*help_scroll).min(max_scroll);
+
             let p = Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
+                .scroll((*help_scroll, 0))
                 .block(block);
             frame.render_widget(p, popup);
+
+            if total_lines > visible_h {
+                let mut sb = ScrollbarState::new(max_scroll as usize + 1)
+                    .position(*help_scroll as usize);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    popup,
+                    &mut sb,
+                );
+            }
         }
     }
 }

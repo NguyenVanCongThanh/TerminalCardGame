@@ -2,16 +2,19 @@ pub mod renderer;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use image::DynamicImage;
 use reqwest::Client;
+use tokio::sync::Semaphore;
 
 use crate::domain::{Card, ImageQuality};
 use crate::error::{AppError, AppResult};
 
 const MAX_MEMORY_IMAGES: usize = 64;
+const MAX_CONCURRENT_DOWNLOADS: usize = 6;
 
 /// Statistics about the on-disk artwork cache.
 #[derive(Debug, Clone, Default)]
@@ -25,6 +28,9 @@ pub struct ImageCache {
     cache_dir: PathBuf,
     client: Client,
     memory: Mutex<MemoryImageLru>,
+    download_semaphore: Semaphore,
+    generation: AtomicU64,
+    temp_seq: AtomicU64,
 }
 
 struct MemoryImageLru {
@@ -40,12 +46,21 @@ impl MemoryImageLru {
         }
     }
 
+    fn touch(&mut self, key: &str) {
+        self.order.retain(|k| k != key);
+        self.order.push_back(key.to_string());
+    }
+
     fn get(&mut self, key: &str) -> Option<DynamicImage> {
-        self.map.get(key).cloned()
+        let img = self.map.get(key).cloned()?;
+        self.touch(key);
+        Some(img)
     }
 
     fn insert(&mut self, key: String, img: DynamicImage) {
-        if !self.map.contains_key(&key) {
+        if self.map.contains_key(&key) {
+            self.touch(&key);
+        } else {
             if self.order.len() >= MAX_MEMORY_IMAGES
                 && let Some(evicted) = self.order.pop_front()
             {
@@ -73,7 +88,14 @@ impl ImageCache {
             cache_dir,
             client,
             memory: Mutex::new(MemoryImageLru::new()),
+            download_semaphore: Semaphore::new(MAX_CONCURRENT_DOWNLOADS),
+            generation: AtomicU64::new(0),
+            temp_seq: AtomicU64::new(0),
         })
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     pub fn cache_key(card_id: &str, quality: ImageQuality) -> String {
@@ -96,10 +118,28 @@ impl ImageCache {
             .join(format!("{safe_id}_{}.png", quality.as_str()))
     }
 
+    fn is_quality_cache_file(&self, path: &Path) -> bool {
+        if !path.starts_with(&self.cache_dir) {
+            return false;
+        }
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name.ends_with("_high.png") || name.ends_with("_low.png"))
+    }
+
     /// Returns a cached `DynamicImage` synchronously from memory if already decoded.
     pub fn get_in_memory(&self, card_id: &str, quality: ImageQuality) -> Option<DynamicImage> {
         let key = Self::cache_key(card_id, quality);
         self.memory.lock().expect("image cache mutex").get(&key)
+    }
+
+    async fn decode_from_disk(disk_path: PathBuf) -> AppResult<DynamicImage> {
+        tokio::task::spawn_blocking(move || -> AppResult<DynamicImage> {
+            let bytes = std::fs::read(&disk_path)?;
+            Ok(image::load_from_memory(&bytes)?)
+        })
+        .await
+        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?
     }
 
     /// Loads the card image from memory, local disk cache, or remote URL (caching to disk & memory).
@@ -108,6 +148,7 @@ impl ImageCache {
         card: &Card,
         quality: ImageQuality,
     ) -> AppResult<(DynamicImage, PathBuf)> {
+        let start_gen = self.generation.load(Ordering::Acquire);
         let key = Self::cache_key(&card.id, quality);
         let expected_path = self.disk_path_for(card, quality);
 
@@ -115,25 +156,30 @@ impl ImageCache {
             return Ok((img, expected_path));
         }
 
-        // Check expected quality-specific path first, then any existing `card.local_image_path`
-        let existing_disk = if expected_path.exists() {
-            Some(expected_path.clone())
-        } else if let Some(ref saved) = card.local_image_path {
+        // Check quality-specific disk cache first; only skip network for non-cache custom paths.
+        let custom_local_path = card.local_image_path.as_ref().and_then(|saved| {
             let p = PathBuf::from(saved);
-            if p.exists() { Some(p) } else { None }
+            if p.exists() && !self.is_quality_cache_file(&p) {
+                Some(p)
+            } else {
+                None
+            }
+        });
+
+        let direct_disk = if expected_path.exists() {
+            Some(expected_path.clone())
         } else {
-            None
+            custom_local_path
         };
 
-        if let Some(disk_path) = existing_disk {
-            let path_clone = disk_path.clone();
-            let decoded = tokio::task::spawn_blocking(move || -> AppResult<DynamicImage> {
-                let bytes = std::fs::read(&path_clone)?;
-                Ok(image::load_from_memory(&bytes)?)
-            })
-            .await
-            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))??;
-
+        if let Some(disk_path) = direct_disk {
+            let decoded = Self::decode_from_disk(disk_path.clone()).await?;
+            if self.generation.load(Ordering::Acquire) != start_gen {
+                return Err(AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Image cache cleared while decoding",
+                )));
+            }
             self.memory
                 .lock()
                 .expect("image cache mutex")
@@ -144,33 +190,83 @@ impl ImageCache {
         let target_url = match quality {
             ImageQuality::High => card.image_url.as_ref().or(card.thumbnail_url.as_ref()),
             ImageQuality::Low => card.thumbnail_url.as_ref().or(card.image_url.as_ref()),
-        }
-        .ok_or_else(|| AppError::Provider(format!("Card '{}' has no image URL", card.name)))?;
+        };
 
-        let resp = self.client.get(target_url).send().await?;
-        if !resp.status().is_success() {
+        let offline_fallback_path = card
+            .local_image_path
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|p| p.exists());
+
+        let Some(url) = target_url else {
+            if let Some(fallback) = offline_fallback_path {
+                let decoded = Self::decode_from_disk(fallback.clone()).await?;
+                return Ok((decoded, fallback));
+            }
             return Err(AppError::Provider(format!(
-                "Artwork download failed (HTTP {}) for {}",
-                resp.status(),
+                "Card '{}' has no image URL",
                 card.name
             )));
+        };
+
+        let download_res: AppResult<Vec<u8>> = async {
+            let _permit = self
+                .download_semaphore
+                .acquire()
+                .await
+                .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+            let resp = self.client.get(url).send().await?;
+            if !resp.status().is_success() {
+                return Err(AppError::Provider(format!(
+                    "Artwork download failed (HTTP {}) for {}",
+                    resp.status(),
+                    card.name
+                )));
+            }
+            Ok(resp.bytes().await?.to_vec())
         }
-        let bytes = resp.bytes().await?;
+        .await;
+
+        let bytes_vec = match download_res {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if let Some(fallback) = offline_fallback_path {
+                    let decoded = Self::decode_from_disk(fallback.clone()).await?;
+                    return Ok((decoded, fallback));
+                }
+                return Err(err);
+            }
+        };
+
+        if self.generation.load(Ordering::Acquire) != start_gen {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Image cache cleared during download",
+            )));
+        }
 
         let write_path = expected_path.clone();
-        let bytes_vec = bytes.to_vec();
+        let tmp_seq = self.temp_seq.fetch_add(1, Ordering::Relaxed);
         let decoded = tokio::task::spawn_blocking(move || -> AppResult<DynamicImage> {
             let img = image::load_from_memory(&bytes_vec)?;
             if let Some(parent) = write_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let tmp_path = write_path.with_extension("png.tmp");
+            let tmp_path = write_path.with_extension(format!("png.{tmp_seq}.tmp"));
             std::fs::write(&tmp_path, &bytes_vec)?;
             std::fs::rename(&tmp_path, &write_path)?;
             Ok(img)
         })
         .await
         .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))??;
+
+        if self.generation.load(Ordering::Acquire) != start_gen {
+            let _ = std::fs::remove_file(&expected_path);
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Image cache cleared before commit",
+            )));
+        }
 
         self.memory
             .lock()
@@ -187,6 +283,7 @@ impl ImageCache {
     }
 
     pub fn clear_cache(&self) -> AppResult<()> {
+        self.generation.fetch_add(1, Ordering::Release);
         self.memory.lock().expect("image cache mutex").clear();
         if self.cache_dir.exists() {
             std::fs::remove_dir_all(&self.cache_dir)?;
@@ -208,5 +305,24 @@ fn collect_dir_stats(dir: &Path, stats: &mut CacheStats) {
             stats.file_count += 1;
             stats.total_bytes += meta.len();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_lru_evicts_least_recently_used() {
+        let mut lru = MemoryImageLru::new();
+        let img = DynamicImage::new_rgba8(1, 1);
+        for i in 0..MAX_MEMORY_IMAGES {
+            lru.insert(format!("k{i}"), img.clone());
+        }
+        // Touch k0 so it becomes most recently used; k1 should be evicted next.
+        assert!(lru.get("k0").is_some());
+        lru.insert("extra".to_string(), img);
+        assert!(lru.get("k0").is_some(), "touched key k0 should stay cached");
+        assert!(lru.get("k1").is_none(), "untouched oldest key k1 should be evicted");
     }
 }

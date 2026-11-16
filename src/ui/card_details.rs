@@ -6,7 +6,7 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 
 use crate::app::{AppContext, CardDetailsScreen};
 use crate::ui::theme;
-use crate::ui::widgets::render_card_artwork_frame;
+use crate::ui::widgets::render_card_artwork_frame_guarded;
 
 pub fn render(
     frame: &mut Frame<'_>,
@@ -25,8 +25,9 @@ pub fn render(
         .split(area);
 
     let tick = ctx.tick;
+    let suppress = ctx.should_suppress_artwork();
     if let Some(slot) = ctx.image_slots.get_mut("main") {
-        render_card_artwork_frame(frame, cols[0], &item.card, slot, tick, true);
+        render_card_artwork_frame_guarded(frame, cols[0], &item.card, slot, tick, true, None, suppress);
     }
 
     let card = &item.card;
@@ -154,8 +155,9 @@ pub fn render(
         screen.cards.len()
     );
 
-    let total_lines = lines.len() as u16;
+    let inner_w = cols[1].width.saturating_sub(4);
     let visible_h = cols[1].height.saturating_sub(2);
+    let total_lines = theme::wrapped_line_count(&lines, inner_w);
     let max_scroll = total_lines.saturating_sub(visible_h);
     screen.scroll = screen.scroll.min(max_scroll);
 

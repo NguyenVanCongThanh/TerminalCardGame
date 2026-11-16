@@ -29,11 +29,13 @@ pub struct PackOpeningState {
 #[derive(Default)]
 pub struct PackOpeningScreen {
     pub state: Option<PackOpeningState>,
+    pub detail_scroll: u16,
 }
 
 impl PackOpeningScreen {
     pub fn start(&mut self, result: PackOpeningResult, fast_animations: bool) {
         let max_ticks = if fast_animations { 4 } else { 10 };
+        self.detail_scroll = 0;
         self.state = Some(PackOpeningState {
             result,
             phase: PackPhase::Ripping {
@@ -64,14 +66,33 @@ impl ScreenController for PackOpeningScreen {
     }
 
     fn footer_hints(&self, compact: bool) -> &'static str {
-        if compact {
-            "[Space] Flip/Next  [←/→] Slot  [a] All  [d] Info  [o] Again  [Esc] Back"
-        } else {
-            "[Space/Enter] Flip/Next  [←/→] Browse  [a] Reveal All  [d] Details  [o] Open Another  [c] Collection  [Esc] Back"
+        match self.state.as_ref().map(|s| &s.phase) {
+            Some(PackPhase::Ripping { .. }) => {
+                if compact {
+                    "[Space/Enter] Skip  [?] Help  [Esc/q] Back"
+                } else {
+                    "[Space/Enter] Skip Animation  [?] Help  [Esc/q] Back"
+                }
+            }
+            Some(PackPhase::Revealing { .. }) => {
+                if compact {
+                    "[Space] Flip/Next  [←/→] Slot  [a] All  [Esc/q] Back"
+                } else {
+                    "[Space/Enter] Flip/Next  [←/→] Browse  [↑/↓] Scroll Info  [a] Reveal All  [Esc/q] Back"
+                }
+            }
+            Some(PackPhase::Summary { .. }) | None => {
+                if compact {
+                    "[↑/↓] Slot  [d] Info  [o] Again  [c] Vault  [Esc/q] Back"
+                } else {
+                    "[↑/↓] Select  [Enter/d] Details  [o] Open Another  [c] Collection  [Esc/q] Back"
+                }
+            }
         }
     }
 
     fn on_enter(&mut self, ctx: &mut AppContext) {
+        self.detail_scroll = 0;
         self.bind_active_card(ctx);
     }
 
@@ -89,6 +110,7 @@ impl ScreenController for PackOpeningScreen {
                         revealed: vec![false; len],
                         flash_ticks: 0,
                     };
+                    self.detail_scroll = 0;
                 }
             }
             PackPhase::Revealing { flash_ticks, .. } => {
@@ -121,8 +143,11 @@ impl ScreenController for PackOpeningScreen {
                             revealed: vec![false; total],
                             flash_ticks: 0,
                         };
+                        self.detail_scroll = 0;
                     }
-                    KeyCode::Esc => pending = Some(Pending::BackToPacks),
+                    KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                        pending = Some(Pending::BackToPacks);
+                    }
                     _ => {}
                 },
                 PackPhase::Revealing {
@@ -130,49 +155,69 @@ impl ScreenController for PackOpeningScreen {
                     revealed,
                     flash_ticks,
                 } => match key.code {
-                    KeyCode::Esc => pending = Some(Pending::BackToPacks),
-                    KeyCode::Left | KeyCode::Char('h') => {
+                    KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                        pending = Some(Pending::BackToPacks);
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.detail_scroll = self.detail_scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        self.detail_scroll = self.detail_scroll.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        self.detail_scroll = self.detail_scroll.saturating_add(5);
+                    }
+                    KeyCode::Left | KeyCode::Char('h') if total > 0 => {
                         *cursor = cursor.checked_sub(1).unwrap_or(total - 1);
+                        self.detail_scroll = 0;
                         if revealed[*cursor] {
                             pending = Some(Pending::BindMainCard(Box::new(
                                 state.result.cards[*cursor].card.clone(),
                             )));
                         }
                     }
-                    KeyCode::Right | KeyCode::Char('l') => {
+                    KeyCode::Right | KeyCode::Char('l') if total > 0 => {
                         *cursor = (*cursor + 1) % total;
+                        self.detail_scroll = 0;
                         if revealed[*cursor] {
                             pending = Some(Pending::BindMainCard(Box::new(
                                 state.result.cards[*cursor].card.clone(),
                             )));
                         }
                     }
-                    KeyCode::Char('a') => {
+                    KeyCode::Char('a') if total > 0 => {
                         revealed.fill(true);
-                        let last = total.saturating_sub(1);
+                        let last = total - 1;
                         *cursor = last;
+                        self.detail_scroll = 0;
                         state.phase = PackPhase::Summary { cursor: last };
                         pending = Some(Pending::BindMainCard(Box::new(
                             state.result.cards[last].card.clone(),
                         )));
                     }
-                    KeyCode::Enter | KeyCode::Char(' ') => {
+                    KeyCode::Enter | KeyCode::Char(' ') if total > 0 => {
                         if !revealed[*cursor] {
                             revealed[*cursor] = true;
+                            self.detail_scroll = 0;
                             let pulled = &state.result.cards[*cursor];
                             *flash_ticks = if pulled.card.rarity.is_hit() { 16 } else { 5 };
                             pending = Some(Pending::BindMainCard(Box::new(pulled.card.clone())));
+                        } else if revealed.iter().all(|&r| r) {
+                            state.phase = PackPhase::Summary { cursor: *cursor };
                         } else if *cursor + 1 < total {
                             *cursor += 1;
+                            self.detail_scroll = 0;
                             if revealed[*cursor] {
                                 pending = Some(Pending::BindMainCard(Box::new(
                                     state.result.cards[*cursor].card.clone(),
                                 )));
                             }
-                        } else if revealed.iter().all(|&r| r) {
-                            state.phase = PackPhase::Summary { cursor: *cursor };
                         } else if let Some(next_unrevealed) = revealed.iter().position(|&r| !r) {
                             *cursor = next_unrevealed;
+                            self.detail_scroll = 0;
                         }
                     }
                     _ => {}
@@ -181,19 +226,23 @@ impl ScreenController for PackOpeningScreen {
                     KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
                         pending = Some(Pending::BackToPacks);
                     }
-                    KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k')
+                        if total > 0 =>
+                    {
                         *cursor = cursor.checked_sub(1).unwrap_or(total - 1);
                         pending = Some(Pending::BindMainCard(Box::new(
                             state.result.cards[*cursor].card.clone(),
                         )));
                     }
-                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Down | KeyCode::Char('j')
+                        if total > 0 =>
+                    {
                         *cursor = (*cursor + 1) % total;
                         pending = Some(Pending::BindMainCard(Box::new(
                             state.result.cards[*cursor].card.clone(),
                         )));
                     }
-                    KeyCode::Enter | KeyCode::Char('d') => {
+                    KeyCode::Enter | KeyCode::Char('d') if total > 0 => {
                         pending = Some(Pending::InspectAll(*cursor));
                     }
                     KeyCode::Char('o') => {

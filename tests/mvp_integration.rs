@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -20,12 +21,16 @@ use terminal_card_game::storage::{
 };
 use terminal_card_game::ui;
 
+static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn temp_test_dir(prefix: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("tcg_test_{prefix}_{nanos}"));
+    let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir().join(format!("tcg_test_{prefix}_{pid}_{seq}_{nanos}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

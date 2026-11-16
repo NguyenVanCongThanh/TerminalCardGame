@@ -33,8 +33,8 @@ impl TcgDexProvider {
         })
     }
 
-    /// Picks a balanced sample of card IDs across the set so the resulting demo subset contains
-    /// rare/holo cards (usually near the front of a set), uncommons (middle), and commons (tail).
+    /// Picks a balanced sample of card IDs across the set so the resulting subset covers
+    /// head holos (classic WOTC sets), evenly spaced middle cards, and tail chase cards (modern SV/SWSH sets).
     fn select_balanced_sample(cards: &[TcgDexCardBrief], limit: usize) -> Vec<String> {
         if cards.is_empty() || limit == 0 {
             return Vec::new();
@@ -46,24 +46,34 @@ impl TcgDexProvider {
         let mut selected_indices = Vec::with_capacity(limit);
         let mut seen = std::collections::HashSet::new();
 
-        // Always include the first few chase/holo cards if present (e.g., Charizard #4 in base1)
-        let head_count = limit.min(6).min(cards.len());
+        // Include first few cards (e.g., Charizard #4 in base1)
+        let head_count = limit.min(5).min(cards.len());
         for idx in 0..head_count {
             if seen.insert(idx) {
                 selected_indices.push(idx);
             }
         }
 
-        // Distribute the remaining slots evenly across the rest of the set
-        let remaining = limit.saturating_sub(selected_indices.len());
-        if remaining > 0 && cards.len() > head_count {
-            let span = cards.len() - head_count;
+        // Include final chase/secret cards at the end of modern sets (e.g., SV/SWSH)
+        let tail_count = limit.saturating_sub(selected_indices.len()).min(2);
+        let tail_start = cards.len().saturating_sub(tail_count);
+
+        // Distribute the remaining slots evenly across the middle span
+        let remaining = limit.saturating_sub(selected_indices.len() + tail_count);
+        if remaining > 0 && tail_start > head_count {
+            let span = tail_start - head_count;
             for step in 0..remaining {
                 let idx = head_count + (step * span) / remaining;
-                let idx = idx.min(cards.len() - 1);
+                let idx = idx.min(tail_start - 1);
                 if seen.insert(idx) {
                     selected_indices.push(idx);
                 }
+            }
+        }
+
+        for idx in tail_start..cards.len() {
+            if seen.insert(idx) {
+                selected_indices.push(idx);
             }
         }
 
@@ -108,6 +118,7 @@ impl TcgDexProvider {
             || lower.contains("radiant")
             || lower.contains("amazing")
             || lower.contains("ace spec")
+            || lower.contains("four diamond")
             || lower.contains("star")
         {
             Rarity::UltraRare
@@ -162,16 +173,21 @@ impl TcgDexProvider {
             attributes.insert("Retreat Cost".to_string(), retreat.to_string());
         }
         if let Some(pricing) = detail.pricing.as_ref() {
-            if let Some(cm) = pricing.cardmarket.as_ref() {
-                if let Some(trend) = cm.trend.or(cm.avg) {
-                    attributes.insert("Market Trend".to_string(), format!("€{trend:.2}"));
-                }
+            let cm_price = pricing
+                .cardmarket
+                .as_ref()
+                .and_then(|cm| cm.trend.or(cm.avg));
+            if let Some(trend) = cm_price {
+                attributes.insert("Market Trend".to_string(), format!("€{trend:.2}"));
             } else if let Some(tp) = pricing.tcgplayer.as_ref()
                 && let Some(price) = tp
                     .holofoil
                     .as_ref()
                     .and_then(|p| p.market_price)
+                    .or_else(|| tp.reverse_holofoil.as_ref().and_then(|p| p.market_price))
                     .or_else(|| tp.normal.as_ref().and_then(|p| p.market_price))
+                    .or_else(|| tp.first_edition_holofoil.as_ref().and_then(|p| p.market_price))
+                    .or_else(|| tp.unlimited_holofoil.as_ref().and_then(|p| p.market_price))
             {
                 attributes.insert("Market Price".to_string(), format!("${price:.2}"));
             }
@@ -239,9 +255,13 @@ impl TcgDexProvider {
         }
     }
 
-    async fn fetch_single_set(&self, set_id: &str) -> AppResult<TcgDexSetDetail> {
-        let url = format!("{}/sets/{}", self.base_url, set_id);
-        let resp = self.client.get(&url).send().await?;
+    async fn fetch_single_set_with(
+        client: &Client,
+        base_url: &str,
+        set_id: &str,
+    ) -> AppResult<TcgDexSetDetail> {
+        let url = format!("{base_url}/sets/{set_id}");
+        let resp = client.get(&url).send().await?;
         if !resp.status().is_success() {
             return Err(AppError::Provider(format!(
                 "TCGdex returned HTTP {} for set '{set_id}'",
@@ -249,6 +269,10 @@ impl TcgDexProvider {
             )));
         }
         Ok(resp.json::<TcgDexSetDetail>().await?)
+    }
+
+    async fn fetch_single_set(&self, set_id: &str) -> AppResult<TcgDexSetDetail> {
+        Self::fetch_single_set_with(&self.client, &self.base_url, set_id).await
     }
 }
 
@@ -263,10 +287,22 @@ impl CardDataProvider for TcgDexProvider {
 
     fn fetch_collections(&self) -> BoxFuture<'_, AppResult<Vec<Collection>>> {
         Box::pin(async move {
-            let mut results = Vec::new();
-            for set_id in CURATED_SET_IDS {
-                match self.fetch_single_set(set_id).await {
-                    Ok(set) => {
+            let mut join_set = tokio::task::JoinSet::new();
+            for (order_idx, &set_id) in CURATED_SET_IDS.iter().enumerate() {
+                let client = self.client.clone();
+                let base_url = self.base_url.clone();
+                let sid = set_id.to_string();
+                join_set.spawn(async move {
+                    let res = Self::fetch_single_set_with(&client, &base_url, &sid).await;
+                    (order_idx, res)
+                });
+            }
+
+            let mut ordered: Vec<(usize, Collection)> = Vec::new();
+            let mut last_err = None;
+            while let Some(res) = join_set.join_next().await {
+                match res {
+                    Ok((order_idx, Ok(set))) => {
                         let series = set
                             .serie
                             .as_ref()
@@ -283,34 +319,35 @@ impl CardDataProvider for TcgDexProvider {
                             .filter(|l| !l.is_empty())
                             .map(|l| format!("{}.png", l.trim_end_matches('/')));
 
-                        results.push(Collection {
-                            id: set.id.clone(),
-                            universe_id: "pokemon".to_string(),
-                            name: set.name,
-                            series: series.clone(),
-                            release_date: set.release_date,
-                            total_cards_in_set: total,
-                            logo_url,
-                            description: format!(
-                                "{series} series expansion synced live from TCGdex ({total} cards in full set)."
-                            ),
-                            synced_at: None,
-                        });
+                        ordered.push((
+                            order_idx,
+                            Collection {
+                                id: set.id.clone(),
+                                universe_id: "pokemon".to_string(),
+                                name: set.name,
+                                series: series.clone(),
+                                release_date: set.release_date,
+                                total_cards_in_set: total,
+                                logo_url,
+                                description: format!(
+                                    "{series} series expansion synced live from TCGdex ({total} cards in full set)."
+                                ),
+                                synced_at: None,
+                            },
+                        ));
                     }
-                    Err(err) => {
-                        // Fail only if all sets fail; otherwise return partial successes
-                        if results.is_empty() && *set_id == *CURATED_SET_IDS.last().unwrap() {
-                            return Err(err);
-                        }
-                    }
+                    Ok((_, Err(err))) => last_err = Some(err),
+                    Err(err) => last_err = Some(AppError::Provider(err.to_string())),
                 }
             }
-            if results.is_empty() {
-                return Err(AppError::Provider(
-                    "Unable to fetch any Pokémon collections from TCGdex".to_string(),
-                ));
+
+            if ordered.is_empty() {
+                return Err(last_err.unwrap_or_else(|| {
+                    AppError::Provider("Unable to fetch any Pokémon collections from TCGdex".to_string())
+                }));
             }
-            Ok(results)
+            ordered.sort_by_key(|(idx, _)| *idx);
+            Ok(ordered.into_iter().map(|(_, col)| col).collect())
         })
     }
 
@@ -323,7 +360,8 @@ impl CardDataProvider for TcgDexProvider {
         Box::pin(async move {
             let set = self.fetch_single_set(&collection_id).await?;
             let sample_ids = Self::select_balanced_sample(&set.cards, limit);
-            if sample_ids.is_empty() {
+            let expected_count = sample_ids.len();
+            if expected_count == 0 {
                 return Err(AppError::Provider(format!(
                     "Set '{collection_id}' returned zero cards"
                 )));
@@ -371,6 +409,15 @@ impl CardDataProvider for TcgDexProvider {
                 return Err(last_err.unwrap_or_else(|| {
                     AppError::Provider("Failed to fetch any cards from TCGdex".to_string())
                 }));
+            }
+            if cards.len() * 2 < expected_count
+                && let Some(err) = last_err
+            {
+                return Err(AppError::Provider(format!(
+                    "Partial sync failure for '{collection_id}' ({}/{} cards fetched): {err}",
+                    cards.len(),
+                    expected_count
+                )));
             }
 
             cards.sort_by(|a, b| {
@@ -459,7 +506,13 @@ struct TcgDexTcgplayerVariant {
 #[derive(Debug, Deserialize)]
 struct TcgDexTcgplayer {
     holofoil: Option<TcgDexTcgplayerVariant>,
+    #[serde(rename = "reverse-holofoil")]
+    reverse_holofoil: Option<TcgDexTcgplayerVariant>,
     normal: Option<TcgDexTcgplayerVariant>,
+    #[serde(rename = "1st-edition-holofoil")]
+    first_edition_holofoil: Option<TcgDexTcgplayerVariant>,
+    #[serde(rename = "unlimited-holofoil")]
+    unlimited_holofoil: Option<TcgDexTcgplayerVariant>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -532,7 +585,7 @@ mod tests {
         assert_eq!(sample.len(), 20);
         assert_eq!(sample[0], "base1-1");
         assert_eq!(sample[3], "base1-4");
-        assert!(sample.iter().any(|id| id == "base1-54" || id == "base1-53"));
-        assert!(sample.iter().any(|id| id == "base1-94"));
+        assert!(sample.iter().any(|id| id == "base1-48" || id == "base1-56"));
+        assert_eq!(sample[19], "base1-100");
     }
 }

@@ -53,6 +53,7 @@ pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &SettingsScreen, 
         ),
     ];
 
+    let desc_max_w = cols[0].width.saturating_sub(6) as usize;
     let items: Vec<ListItem<'_>> = rows
         .iter()
         .enumerate()
@@ -77,18 +78,22 @@ pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &SettingsScreen, 
                 ),
             };
 
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!("{prefix}{name}: "),
-                        Style::default()
-                            .fg(theme::TEXT_PRIMARY)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    value_span,
-                ]),
-                Line::from(Span::styled(format!("  {desc}"), theme::muted_style())),
-            ])
+            let mut item_lines = vec![Line::from(vec![
+                Span::styled(
+                    format!("{prefix}{name}: "),
+                    Style::default()
+                        .fg(theme::TEXT_PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                value_span,
+            ])];
+            for line in theme::wrap_plain_text(desc, desc_max_w.max(12)) {
+                item_lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    theme::muted_style(),
+                )));
+            }
+            ListItem::new(item_lines)
         })
         .collect();
 

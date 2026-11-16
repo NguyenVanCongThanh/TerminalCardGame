@@ -1,5 +1,5 @@
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding};
 
 use crate::domain::Rarity;
@@ -111,4 +111,94 @@ pub fn pill_badge<'a>(label: impl Into<String>, fg: Color, bg: Color) -> Span<'a
         format!(" {} ", label.into()),
         Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
     )
+}
+
+/// Estimates the rendered height (in terminal rows) of `lines` when word-wrapped to `inner_width`.
+pub fn wrapped_line_count(lines: &[Line<'_>], inner_width: u16) -> u16 {
+    let max_w = inner_width as usize;
+    if max_w == 0 {
+        return 0;
+    }
+
+    let mut total_rows: usize = 0;
+    for line in lines {
+        let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let full_w = Line::raw(&plain).width();
+        if full_w <= max_w {
+            total_rows += 1;
+            continue;
+        }
+
+        let leading_ws = plain.chars().take_while(|c| c.is_whitespace()).count();
+        let mut rows: usize = 1;
+        let mut col = leading_ws.min(max_w);
+        let mut first_word = true;
+
+        for word in plain.split_whitespace() {
+            let word_w = Line::raw(word).width();
+            if word_w > max_w {
+                if !first_word && col > 0 {
+                    rows += 1;
+                }
+                let chunks = word_w.div_ceil(max_w);
+                rows += chunks.saturating_sub(1);
+                let rem = word_w % max_w;
+                col = if rem == 0 { max_w } else { rem };
+            } else if first_word {
+                if col + word_w <= max_w {
+                    col += word_w;
+                } else {
+                    rows += 1;
+                    col = word_w;
+                }
+            } else if col + 1 + word_w <= max_w {
+                col += 1 + word_w;
+            } else {
+                rows += 1;
+                col = word_w;
+            }
+            first_word = false;
+        }
+        total_rows += rows;
+    }
+
+    total_rows.min(u16::MAX as usize) as u16
+}
+
+/// Wraps a plain text string into lines of at most `max_width` terminal columns (for `ListItem` descriptions).
+pub fn wrap_plain_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+
+    for word in text.split_whitespace() {
+        let word_w = Line::raw(word).width();
+        if current.is_empty() {
+            if word_w <= max_width {
+                current.push_str(word);
+                current_w = word_w;
+            } else {
+                let clipped: String = word.chars().take(max_width).collect();
+                lines.push(clipped);
+            }
+        } else if current_w + 1 + word_w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + word_w;
+        } else {
+            lines.push(current);
+            current = word.to_string();
+            current_w = word_w;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }

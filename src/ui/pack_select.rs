@@ -23,6 +23,7 @@ pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &PackSelectScreen
         .map(|c| c.name.clone())
         .unwrap_or_else(|| ctx.selected_collection_id.clone());
 
+    let desc_max_w = cols[0].width.saturating_sub(6) as usize;
     let items: Vec<ListItem<'_>> = ctx
         .pack_configs
         .iter()
@@ -34,21 +35,23 @@ pub fn render(frame: &mut Frame<'_>, ctx: &AppContext, screen: &PackSelectScreen
                 "booster-10" => ("STANDARD", theme::ACCENT_GREEN),
                 _ => ("DEMO", theme::ACCENT_CYAN),
             };
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!("{prefix}{} ", cfg.name),
-                        Style::default()
-                            .fg(theme::ACCENT_GOLD)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    theme::pill_badge(tier_badge, theme::BG_DARK, tier_bg),
-                ]),
-                Line::from(Span::styled(
-                    format!("  {} cards • {}", cfg.card_count(), cfg.description),
+            let mut item_lines = vec![Line::from(vec![
+                Span::styled(
+                    format!("{prefix}{} ", cfg.name),
+                    Style::default()
+                        .fg(theme::ACCENT_GOLD)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                theme::pill_badge(tier_badge, theme::BG_DARK, tier_bg),
+            ])];
+            let desc = format!("{} cards • {}", cfg.card_count(), cfg.description);
+            for line in theme::wrap_plain_text(&desc, desc_max_w.max(12)) {
+                item_lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
                     theme::muted_style(),
-                )),
-            ])
+                )));
+            }
+            ListItem::new(item_lines)
         })
         .collect();
 

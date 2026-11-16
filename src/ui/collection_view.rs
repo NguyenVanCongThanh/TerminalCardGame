@@ -8,8 +8,9 @@ use ratatui::widgets::{
 };
 
 use crate::app::{AppContext, MyCollectionScreen};
+use crate::domain::Card;
 use crate::ui::theme;
-use crate::ui::widgets::{render_card_artwork_frame, render_card_artwork_frame_with_badge};
+use crate::ui::widgets::render_card_artwork_frame_guarded;
 
 pub fn render(
     frame: &mut Frame<'_>,
@@ -68,11 +69,24 @@ fn render_filter_and_search_bar(
         ])
         .split(inner);
 
-    // Row 1: Set filter Tabs
+    // Row 1: Set filter Tabs (keep labels concise when many tabs or narrow width)
+    let avail_tab_w = rows[0].width as usize;
+    let est_full_w: usize = 10
+        + ctx
+            .collections
+            .iter()
+            .map(|c| c.name.chars().count() + 3)
+            .sum::<usize>();
+    let compact_tabs = est_full_w > avail_tab_w;
     let mut tab_titles = vec![Line::from(" All Sets ")];
     let mut selected_tab = 0usize;
     for (idx, col) in ctx.collections.iter().enumerate() {
-        tab_titles.push(Line::from(format!(" {} ", col.name)));
+        let label = if compact_tabs {
+            format!(" {} ", col.id)
+        } else {
+            format!(" {} ", col.name)
+        };
+        tab_titles.push(Line::from(label));
         if screen.collection_filter.as_deref() == Some(col.id.as_str()) {
             selected_tab = idx + 1;
         }
@@ -93,14 +107,24 @@ fn render_filter_and_search_bar(
     let rarity_label = screen
         .rarity_filter
         .map(|r| r.label().to_string())
-        .unwrap_or_else(|| "All Rarities".to_string());
+        .unwrap_or_else(|| "All".to_string());
     let view_label = if screen.grid_mode { "Grid" } else { "List" };
+    let max_query_chars: usize = if rows[1].width < 88 { 12 } else { 20 };
+    let query_tail: String = {
+        let count = screen.search_query.chars().count();
+        if count > max_query_chars {
+            let skip = count - max_query_chars.saturating_sub(1);
+            format!("…{}", screen.search_query.chars().skip(skip).collect::<String>())
+        } else {
+            screen.search_query.clone()
+        }
+    };
     let search_display = if screen.search_active {
-        format!(" / {}█ ", screen.search_query)
+        format!(" / {query_tail}█ ")
     } else if screen.search_query.is_empty() {
         " [/] Search... ".to_string()
     } else {
-        format!(" / {} [x:clr] ", screen.search_query)
+        format!(" / {query_tail} [x] ")
     };
     let search_style = if screen.search_active {
         Style::default()
@@ -173,6 +197,7 @@ fn render_list_and_preview(
         .split(area);
 
     let tick = ctx.tick;
+    let suppress = ctx.should_suppress_artwork();
     let filtered = screen.filtered_owned_cards(&ctx.owned_cards);
     let total = filtered.len();
     let rows: Vec<Row<'_>> = filtered
@@ -209,15 +234,17 @@ fn render_list_and_preview(
     let mut state = TableState::default();
     state.select(Some(screen.owned_cursor));
 
+    let set_col_w = if cols[0].width < 46 { 9 } else { 11 };
+    let val_col_w = if cols[0].width < 46 { 6 } else { 8 };
     let table = Table::new(
         rows,
         [
             Constraint::Length(2),
-            Constraint::Length(6),
-            Constraint::Min(14),
-            Constraint::Length(11),
+            Constraint::Length(5),
+            Constraint::Min(10),
+            Constraint::Length(set_col_w),
             Constraint::Length(4),
-            Constraint::Length(8),
+            Constraint::Length(val_col_w),
         ],
     )
     .header(Row::new(vec!["", "Tier", "Card Name", "Set #", "Qty", "Value"]).style(theme::title_style()))
@@ -234,10 +261,20 @@ fn render_list_and_preview(
         );
     }
 
-    if let Some(selected_card) = filtered.get(screen.owned_cursor).map(|o| o.card.clone())
+    let selected_card = filtered.get(screen.owned_cursor).map(|o| o.card.clone());
+    if let Some(selected_card) = selected_card
         && let Some(slot) = ctx.image_slots.get_mut("preview")
     {
-        render_card_artwork_frame(frame, cols[1], &selected_card, slot, tick, true);
+        render_card_artwork_frame_guarded(
+            frame,
+            cols[1],
+            &selected_card,
+            slot,
+            tick,
+            true,
+            None,
+            suppress,
+        );
     }
 }
 
@@ -259,14 +296,21 @@ fn render_grid_view(
     screen.sync_grid_page_size(page_size, ctx);
 
     let tick = ctx.tick;
-    let filtered_cards: Vec<(crate::domain::Card, u32)> = screen
-        .filtered_owned_cards(&ctx.owned_cards)
-        .into_iter()
-        .map(|o| (o.card.clone(), o.quantity))
-        .collect();
-    let total = filtered_cards.len();
+    let suppress = ctx.should_suppress_artwork();
     let page_start = (screen.owned_cursor / page_size) * page_size;
     let page_num = (screen.owned_cursor / page_size) + 1;
+
+    let (total, page_cards): (usize, Vec<(Card, u32)>) = {
+        let filtered = screen.filtered_owned_cards(&ctx.owned_cards);
+        let total = filtered.len();
+        let slice = filtered
+            .into_iter()
+            .skip(page_start)
+            .take(page_size)
+            .map(|o| (o.card.clone(), o.quantity))
+            .collect();
+        (total, slice)
+    };
     let total_pages = total.div_ceil(page_size);
 
     let outer = Layout::default()
@@ -293,12 +337,12 @@ fn render_grid_view(
 
     for (offset, cell_area) in cells.into_iter().enumerate() {
         let abs_idx = page_start + offset;
-        if let Some((card, qty)) = filtered_cards.get(abs_idx) {
+        if let Some((card, qty)) = page_cards.get(offset) {
             let focused = abs_idx == screen.owned_cursor;
             let slot_key = format!("grid-{offset}");
             let badge = format!("x{qty}");
             if let Some(slot) = ctx.image_slots.get_mut(&slot_key) {
-                render_card_artwork_frame_with_badge(
+                render_card_artwork_frame_guarded(
                     frame,
                     cell_area,
                     card,
@@ -306,6 +350,7 @@ fn render_grid_view(
                     tick,
                     focused,
                     Some(&badge),
+                    suppress,
                 );
             }
         } else {

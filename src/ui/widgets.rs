@@ -3,7 +3,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::domain::{Card, PulledCard};
 use crate::images::renderer::CardImageSlot;
@@ -69,7 +69,11 @@ impl<'a> Widget for BoosterPackWidget<'a> {
         };
 
         let crimp = "▲▼".repeat((pack_w as usize / 2).max(4));
-        let foil_bar = "▓".repeat(pack_w.saturating_sub(4) as usize);
+        let inner_w = pack_w.saturating_sub(4) as usize;
+        let foil_bar = "▓".repeat(inner_w);
+        let clip = |s: &str| -> String { s.chars().take(inner_w).collect() };
+        let cards_text = clip(&format!("{sparkle_a} {} CARDS {sparkle_b}", self.card_count));
+        let tier_text = clip(tier_label);
 
         let rows: Vec<(u16, String, Style)> = vec![
             (
@@ -87,9 +91,9 @@ impl<'a> Widget for BoosterPackWidget<'a> {
                 if tear_cols > 0 {
                     let torn = "─".repeat(tear_cols as usize);
                     let rem = "═".repeat(pack_w.saturating_sub(4 + tear_cols) as usize);
-                    format!("✂ {torn}✦{rem}")
+                    format!("✂ {torn}✦{rem}│")
                 } else {
-                    format!("├─{}─┤", "─".repeat(pack_w.saturating_sub(4) as usize))
+                    format!("├─{}─┤", "─".repeat(inner_w))
                 },
                 Style::default()
                     .fg(if tear_cols > 0 {
@@ -101,48 +105,26 @@ impl<'a> Widget for BoosterPackWidget<'a> {
             ),
             (
                 0,
-                format!(
-                    "│ {:^width$} │",
-                    self.set_name
-                        .chars()
-                        .take(pack_w.saturating_sub(4) as usize)
-                        .collect::<String>(),
-                    width = pack_w.saturating_sub(4) as usize
-                ),
+                format!("│ {:^width$} │", clip(self.set_name), width = inner_w),
                 Style::default()
                     .fg(theme::TEXT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             (
                 0,
-                format!(
-                    "│ {:^width$} │",
-                    format!("{sparkle_a} {} CARDS {sparkle_b}", self.card_count),
-                    width = pack_w.saturating_sub(4) as usize
-                ),
+                format!("│ {:^width$} │", cards_text, width = inner_w),
                 Style::default()
                     .fg(accent_primary)
                     .add_modifier(Modifier::BOLD),
             ),
             (
                 0,
-                format!(
-                    "│ {:^width$} │",
-                    tier_label,
-                    width = pack_w.saturating_sub(4) as usize
-                ),
+                format!("│ {:^width$} │", tier_text, width = inner_w),
                 Style::default().fg(accent_secondary),
             ),
             (
                 0,
-                format!(
-                    "│ {:^width$} │",
-                    self.pack_name
-                        .chars()
-                        .take(pack_w.saturating_sub(4) as usize)
-                        .collect::<String>(),
-                    width = pack_w.saturating_sub(4) as usize
-                ),
+                format!("│ {:^width$} │", clip(self.pack_name), width = inner_w),
                 theme::muted_style(),
             ),
             (
@@ -168,24 +150,28 @@ impl<'a> Widget for BoosterPackWidget<'a> {
             buf.set_string(x, y, clipped, style);
         }
 
-        // Emit foil burst sparks around the seam while ripping
+        // Emit foil burst sparks around the seam while ripping, strictly inside `area`.
         if tear_cols > 0 {
             let seam_y = start_y + 2;
-            let spark_x_left = start_x.saturating_sub(2);
-            let spark_x_right = (start_x + pack_w + 1).min(area.right().saturating_sub(1));
             if seam_y > area.top() {
-                buf.set_string(
-                    spark_x_left,
-                    seam_y.saturating_sub(1),
-                    sparkle_a,
-                    Style::default().fg(theme::ACCENT_GOLD),
-                );
-                buf.set_string(
-                    spark_x_right,
-                    seam_y.saturating_sub(1),
-                    sparkle_b,
-                    Style::default().fg(accent_secondary),
-                );
+                let spark_y = seam_y - 1;
+                if start_x >= area.x + 2 {
+                    buf.set_string(
+                        start_x - 2,
+                        spark_y,
+                        sparkle_a,
+                        Style::default().fg(theme::ACCENT_GOLD),
+                    );
+                }
+                let spark_x_right = start_x + pack_w + 1;
+                if spark_x_right < area.right() {
+                    buf.set_string(
+                        spark_x_right,
+                        spark_y,
+                        sparkle_b,
+                        Style::default().fg(accent_secondary),
+                    );
+                }
             }
         }
     }
@@ -207,30 +193,7 @@ impl<'a> Widget for PackStripWidget<'a> {
         }
 
         let total = self.cards.len();
-        let pill_w: usize = 10; // e.g., " 10● SR* "
-        let usable_w = area.width.saturating_sub(4) as usize;
-        let max_visible = (usable_w / (pill_w + 1)).max(1).min(total);
-
-        // Keep cursor centered in sliding window
-        let half = max_visible / 2;
-        let mut start = self.cursor.saturating_sub(half);
-        if start + max_visible > total {
-            start = total.saturating_sub(max_visible);
-        }
-        let end = (start + max_visible).min(total);
-
-        let y = area.y;
-        let mut x = area.x;
-
-        if start > 0 {
-            buf.set_string(x, y, "◀ ", Style::default().fg(theme::ACCENT_GOLD));
-            x += 2;
-        }
-
-        for idx in start..end {
-            if x + 6 >= area.right() {
-                break;
-            }
+        let make_pill = |idx: usize| -> (String, Style) {
             let pulled = &self.cards[idx];
             let is_cur = idx == self.cursor;
             let is_rev = self.revealed.get(idx).copied().unwrap_or(false);
@@ -263,10 +226,59 @@ impl<'a> Widget for PackStripWidget<'a> {
                 theme::muted_style()
             };
 
-            let clipped: String = label
-                .chars()
-                .take(area.right().saturating_sub(x) as usize)
-                .collect();
+            (label, style)
+        };
+
+        // Expand a sliding window outward around `cursor` based on actual pill widths.
+        let mut start = self.cursor.min(total - 1);
+        let mut end = start + 1;
+        let mut used_w = make_pill(start).0.chars().count();
+        let avail_w = area.width as usize;
+
+        loop {
+            let mut grew = false;
+            if end < total {
+                let w = make_pill(end).0.chars().count() + 1;
+                let left_arrow = if start > 0 { 2 } else { 0 };
+                let right_arrow = if end + 1 < total { 2 } else { 0 };
+                if left_arrow + used_w + w + right_arrow <= avail_w {
+                    used_w += w;
+                    end += 1;
+                    grew = true;
+                }
+            }
+            if start > 0 {
+                let w = make_pill(start - 1).0.chars().count() + 1;
+                let left_arrow = if start - 1 > 0 { 2 } else { 0 };
+                let right_arrow = if end < total { 2 } else { 0 };
+                if left_arrow + used_w + w + right_arrow <= avail_w {
+                    used_w += w;
+                    start -= 1;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        let y = area.y;
+        let mut x = area.x;
+        let right_reserve: u16 = if end < total { 2 } else { 0 };
+        let content_right = area.right().saturating_sub(right_reserve);
+
+        if start > 0 {
+            buf.set_string(x, y, "◀ ", Style::default().fg(theme::ACCENT_GOLD));
+            x += 2;
+        }
+
+        for idx in start..end {
+            if x >= content_right {
+                break;
+            }
+            let (label, style) = make_pill(idx);
+            let max_chars = content_right.saturating_sub(x) as usize;
+            let clipped: String = label.chars().take(max_chars).collect();
             let char_len = clipped.chars().count() as u16;
             buf.set_string(x, y, clipped, style);
             x += char_len + 1;
@@ -311,6 +323,7 @@ pub fn render_sparkle_border_overlay(
 
 /// Renders a stylized trading card back (used before flipping a card during pack opening).
 pub fn render_card_back(frame: &mut Frame<'_>, area: Rect, tick: u64, slot_label: &str) {
+    frame.render_widget(Clear, area);
     let sparkle = if (tick / 5).is_multiple_of(2) { "✦" } else { "✧" };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -372,7 +385,9 @@ pub fn render_card_back(frame: &mut Frame<'_>, area: Rect, tick: u64, slot_label
             .add_modifier(Modifier::BOLD),
     )));
 
-    let p = Paragraph::new(lines).alignment(Alignment::Center);
+    let p = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
     frame.render_widget(p, inner);
 }
 
@@ -385,7 +400,7 @@ pub fn render_card_artwork_frame(
     tick: u64,
     focused: bool,
 ) {
-    render_card_artwork_frame_with_badge(frame, area, card, slot, tick, focused, None);
+    render_card_artwork_frame_guarded(frame, area, card, slot, tick, focused, None, false);
 }
 
 /// Renders a card's artwork frame with an optional bottom-right border badge (e.g., `x3`, `NEW!`).
@@ -397,6 +412,21 @@ pub fn render_card_artwork_frame_with_badge(
     tick: u64,
     focused: bool,
     bottom_badge: Option<&str>,
+) {
+    render_card_artwork_frame_guarded(frame, area, card, slot, tick, focused, bottom_badge, false);
+}
+
+/// Renders a card's artwork frame with optional native graphics suppression when a modal is active.
+#[allow(clippy::too_many_arguments)]
+pub fn render_card_artwork_frame_guarded(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    card: &Card,
+    slot: &mut CardImageSlot,
+    tick: u64,
+    focused: bool,
+    bottom_badge: Option<&str>,
+    suppress_artwork: bool,
 ) {
     let r_color = theme::rarity_color(card.rarity, tick);
     let border_type = if card.rarity.is_hit() || focused {
@@ -451,7 +481,7 @@ pub fn render_card_artwork_frame_with_badge(
         return;
     }
 
-    if slot.has_ready_protocol() {
+    if !suppress_artwork && slot.has_ready_protocol() {
         slot.render_into(frame, inner);
         return;
     }
@@ -460,7 +490,12 @@ pub fn render_card_artwork_frame_with_badge(
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spin_ch = spinner[(tick as usize) % spinner.len()];
 
-    let status_line = if slot.loading {
+    let status_line = if suppress_artwork && slot.has_ready_protocol() {
+        Line::from(Span::styled(
+            "Artwork paused while modal is open",
+            theme::muted_style(),
+        ))
+    } else if slot.loading {
         Line::from(Span::styled(
             format!("{spin_ch} Loading artwork..."),
             Style::default().fg(theme::ACCENT_CYAN),

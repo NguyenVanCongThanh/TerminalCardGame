@@ -99,6 +99,9 @@ async fn run_tui(
             }
             Some(msg) = app.async_rx.recv() => {
                 app.handle_async_message(msg);
+                while let Ok(queued) = app.async_rx.try_recv() {
+                    app.handle_async_message(queued);
+                }
             }
             _ = ticker.tick() => {
                 app.on_tick();

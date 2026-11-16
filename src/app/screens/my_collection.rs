@@ -64,9 +64,13 @@ impl Default for MyCollectionScreen {
 
 impl MyCollectionScreen {
     pub fn filtered_owned_cards<'a>(&self, owned_cards: &'a [OwnedCard]) -> Vec<&'a OwnedCard> {
-        let query = self.search_query.trim().to_ascii_lowercase();
+        let query = self.search_query.trim().to_lowercase();
         let mut items: Vec<&OwnedCard> = owned_cards
             .iter()
+            .filter(|o| match &self.collection_filter {
+                Some(cid) => &o.card.collection_id == cid,
+                None => true,
+            })
             .filter(|o| match self.rarity_filter {
                 Some(r) => o.card.rarity == r,
                 None => true,
@@ -75,14 +79,14 @@ impl MyCollectionScreen {
                 if query.is_empty() {
                     return true;
                 }
-                o.card.name.to_ascii_lowercase().contains(&query)
-                    || o.card.card_number.to_ascii_lowercase().contains(&query)
-                    || o.card.raw_rarity.to_ascii_lowercase().contains(&query)
+                o.card.name.to_lowercase().contains(&query)
+                    || o.card.card_number.to_lowercase().contains(&query)
+                    || o.card.raw_rarity.to_lowercase().contains(&query)
                     || o.card
                         .metadata
                         .tags
                         .iter()
-                        .any(|t| t.to_ascii_lowercase().contains(&query))
+                        .any(|t| t.to_lowercase().contains(&query))
             })
             .collect();
 
@@ -168,6 +172,9 @@ impl MyCollectionScreen {
         }
 
         if self.grid_mode {
+            if let Some(s) = ctx.image_slots.get_mut("preview") {
+                s.clear();
+            }
             let page_size = self.grid_page_size.clamp(2, 6);
             let page_start = (self.owned_cursor / page_size) * page_size;
             for i in 0..6 {
@@ -180,8 +187,45 @@ impl MyCollectionScreen {
                     s.clear();
                 }
             }
-        } else if let Some(card) = filtered.get(self.owned_cursor).cloned() {
-            ctx.request_card_into_slot("preview", &card);
+        } else {
+            for i in 0..6 {
+                if let Some(s) = ctx.image_slots.get_mut(&format!("grid-{i}")) {
+                    s.clear();
+                }
+            }
+            if let Some(card) = filtered.get(self.owned_cursor).cloned() {
+                ctx.request_card_into_slot("preview", &card);
+            }
+        }
+    }
+}
+
+fn move_grid_vertical(cursor: usize, len: usize, cols: usize, up: bool) -> usize {
+    if len == 0 || cols == 0 {
+        return 0;
+    }
+    let col = cursor % cols;
+    let row = cursor / cols;
+    if up {
+        if row > 0 {
+            (row - 1) * cols + col
+        } else {
+            let last_row = (len - 1) / cols;
+            let candidate = last_row * cols + col;
+            if candidate < len {
+                candidate
+            } else if last_row > 0 {
+                (last_row - 1) * cols + col
+            } else {
+                cursor
+            }
+        }
+    } else {
+        let candidate = (row + 1) * cols + col;
+        if candidate < len {
+            candidate
+        } else {
+            col.min(len - 1)
         }
     }
 }
@@ -210,7 +254,7 @@ impl ScreenController for MyCollectionScreen {
     }
 
     fn on_enter(&mut self, ctx: &mut AppContext) {
-        ctx.refresh_cached_stats(self.collection_filter.as_deref());
+        ctx.refresh_cached_stats();
         self.clamp_cursor(&ctx.owned_cards);
         self.sync_preview_slots(ctx);
     }
@@ -259,26 +303,20 @@ impl ScreenController for MyCollectionScreen {
                 ScreenAction::None
             }
             KeyCode::Up | KeyCode::Char('k') if len > 0 => {
-                let step = if self.grid_mode && len > grid_cols {
-                    grid_cols
+                self.owned_cursor = if self.grid_mode {
+                    move_grid_vertical(self.owned_cursor, len, grid_cols, true)
                 } else {
-                    1
-                };
-                self.owned_cursor = if self.owned_cursor >= step {
-                    self.owned_cursor - step
-                } else {
-                    len - 1
+                    self.owned_cursor.checked_sub(1).unwrap_or(len - 1)
                 };
                 self.sync_preview_slots(ctx);
                 ScreenAction::None
             }
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
-                let step = if self.grid_mode && len > grid_cols {
-                    grid_cols
+                self.owned_cursor = if self.grid_mode {
+                    move_grid_vertical(self.owned_cursor, len, grid_cols, false)
                 } else {
-                    1
+                    (self.owned_cursor + 1) % len
                 };
-                self.owned_cursor = (self.owned_cursor + step) % len;
                 self.sync_preview_slots(ctx);
                 ScreenAction::None
             }
@@ -310,7 +348,6 @@ impl ScreenController for MyCollectionScreen {
                     }
                 };
                 self.owned_cursor = 0;
-                ctx.refresh_owned_cards(self.collection_filter.as_deref());
                 self.clamp_cursor(&ctx.owned_cards);
                 self.sync_preview_slots(ctx);
                 ScreenAction::None

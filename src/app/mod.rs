@@ -148,11 +148,10 @@ impl App {
     }
 
     pub fn handle_async_message(&mut self, msg: AsyncMessage) {
-        let filter = self.my_collection.collection_filter.clone();
-        if let Some(next_screen) =
-            self.ctx
-                .handle_async_message(msg, self.screen, filter.as_deref())
-        {
+        if let Some(next_screen) = self.ctx.handle_async_message(msg, self.screen) {
+            if next_screen == Screen::PackSelect {
+                self.collection_select.sync_cursor_to(&self.ctx);
+            }
             self.transition_to(next_screen);
         }
         self.my_collection.clamp_cursor(&self.ctx.owned_cards);
@@ -177,6 +176,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::Char('?') && !self.active_controller().blocks_global_help() {
+            self.ctx.help_scroll = 0;
             self.ctx.modal = Some(ActiveModal::Help);
             return;
         }
@@ -206,6 +206,18 @@ impl App {
                 | KeyCode::Char('?')
                 | KeyCode::Char('q') => {
                     self.ctx.modal = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.ctx.help_scroll = self.ctx.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.ctx.help_scroll = self.ctx.help_scroll.saturating_add(1);
+                }
+                KeyCode::PageUp => {
+                    self.ctx.help_scroll = self.ctx.help_scroll.saturating_sub(5);
+                }
+                KeyCode::PageDown => {
+                    self.ctx.help_scroll = self.ctx.help_scroll.saturating_add(5);
                 }
                 _ => {}
             },

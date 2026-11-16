@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use image::DynamicImage;
 use rand::rng;
+use ratatui_image::picker::ProtocolType;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::domain::{
@@ -33,6 +34,7 @@ pub enum AsyncMessage {
     ImageLoaded {
         card_id: String,
         quality: ImageQuality,
+        generation: u64,
         result: AppResult<(DynamicImage, PathBuf)>,
     },
     ImageResized(ResizedSlotEvent),
@@ -86,6 +88,9 @@ pub struct AppContext {
     pub pack_configs: Vec<PackConfig>,
     pub owned_cards: Vec<OwnedCard>,
     pub pack_history: Vec<PackHistoryEntry>,
+    pub total_packs_opened: usize,
+    pub universe_pack_counts: HashMap<String, usize>,
+    pub universe_set_counts: HashMap<String, usize>,
     pub cache_stats: CacheStats,
 
     // Shared active selection & sync state
@@ -96,6 +101,7 @@ pub struct AppContext {
     pub active_pack_idx: usize,
 
     pub modal: Option<ActiveModal>,
+    pub help_scroll: u16,
     pub banner: Option<StatusBanner>,
 }
 
@@ -159,6 +165,9 @@ impl AppContext {
             pack_configs: PackConfig::default_configs(),
             owned_cards: Vec::new(),
             pack_history: Vec::new(),
+            total_packs_opened: 0,
+            universe_pack_counts: HashMap::new(),
+            universe_set_counts: HashMap::new(),
             cache_stats: CacheStats::default(),
             selected_universe_id,
             selected_collection_id,
@@ -166,10 +175,11 @@ impl AppContext {
             syncing_collections_list: false,
             active_pack_idx: 0,
             modal: None,
+            help_scroll: 0,
             banner: None,
         };
 
-        ctx.refresh_cached_stats(None);
+        ctx.refresh_cached_stats();
         Ok(ctx)
     }
 
@@ -193,7 +203,7 @@ impl AppContext {
         }
     }
 
-    pub fn refresh_cached_stats(&mut self, collection_filter: Option<&str>) {
+    pub fn refresh_cached_stats(&mut self) {
         if let Ok(cols) = self.store.list_collections(&self.selected_universe_id) {
             self.collections = cols;
         }
@@ -206,10 +216,33 @@ impl AppContext {
             self.cached_card_counts.insert(col.id.clone(), count);
         }
         self.refresh_selected_collection_rarities();
-        self.refresh_owned_cards(collection_filter);
+        self.refresh_owned_cards();
         if let Ok(hist) = self.store.list_pack_history(8) {
             self.pack_history = hist;
         }
+        self.total_packs_opened = self
+            .store
+            .count_pack_history(None)
+            .unwrap_or(self.pack_history.len());
+        self.universe_pack_counts.clear();
+        self.universe_set_counts.clear();
+        for u in &self.universes {
+            let packs = self.store.count_pack_history(Some(&u.id)).unwrap_or(0);
+            self.universe_pack_counts.insert(u.id.clone(), packs);
+            let sets = if u.id == self.selected_universe_id {
+                self.collections.len()
+            } else {
+                self.store
+                    .list_collections(&u.id)
+                    .map(|c| c.len())
+                    .unwrap_or(0)
+            };
+            self.universe_set_counts.insert(u.id.clone(), sets);
+        }
+        self.refresh_cache_stats();
+    }
+
+    pub fn refresh_cache_stats(&mut self) {
         self.cache_stats = self.image_cache.stats();
     }
 
@@ -225,10 +258,20 @@ impl AppContext {
         }
     }
 
-    pub fn refresh_owned_cards(&mut self, collection_filter: Option<&str>) {
-        if let Ok(owned) = self.store.list_owned_cards(collection_filter) {
+    pub fn refresh_owned_cards(&mut self) {
+        if let Ok(owned) = self.store.list_owned_cards(None) {
             self.owned_cards = owned;
         }
+    }
+
+    pub fn invalidate_image_slots(&mut self) {
+        for slot in self.image_slots.values_mut() {
+            slot.clear();
+        }
+    }
+
+    pub fn should_suppress_artwork(&self) -> bool {
+        self.modal.is_some() && self.renderer.active_protocol() != ProtocolType::Halfblocks
     }
 
     pub fn active_universe(&self) -> Option<&Universe> {
@@ -316,7 +359,7 @@ impl AppContext {
             self.request_card_into_slot("main", &first.card);
         }
 
-        self.refresh_cached_stats(None);
+        self.refresh_cached_stats();
         Some(PackOpeningResult {
             pack_config: pack_cfg,
             universe_id: self.selected_universe_id.clone(),
@@ -359,6 +402,7 @@ impl AppContext {
         self.in_flight_images.insert(cache_key);
 
         let cache = self.image_cache.clone();
+        let generation = cache.generation();
         let card_clone = card.clone();
         let tx = self.async_tx.clone();
         tokio::spawn(async move {
@@ -366,6 +410,7 @@ impl AppContext {
             let _ = tx.send(AsyncMessage::ImageLoaded {
                 card_id: card_clone.id,
                 quality,
+                generation,
                 result: res,
             });
         });
@@ -373,6 +418,7 @@ impl AppContext {
 
     pub fn spawn_sync_collections_list(&mut self) {
         if self.syncing_collections_list {
+            self.set_banner("Already refreshing collections list...", false);
             return;
         }
         let Some(u) = self.active_universe().cloned() else {
@@ -383,7 +429,7 @@ impl AppContext {
             return;
         };
         self.syncing_collections_list = true;
-        self.set_banner("Refreshing Pokémon collections from TCGdex...", false);
+        self.set_banner(format!("Refreshing {} sets...", u.name), false);
         let tx = self.async_tx.clone();
         tokio::spawn(async move {
             let result = provider.fetch_collections().await;
@@ -392,7 +438,8 @@ impl AppContext {
     }
 
     pub fn spawn_sync_collection_cards(&mut self, collection_id: String, open_pack_after: bool) {
-        if self.syncing_collection_id.is_some() {
+        if let Some(ref active) = self.syncing_collection_id {
+            self.set_banner(format!("Already syncing '{active}' — please wait..."), false);
             return;
         }
         let Some(u) = self.active_universe().cloned() else {
@@ -407,7 +454,7 @@ impl AppContext {
         let limit = self.settings.cards_per_sync;
         let tx = self.async_tx.clone();
         self.set_banner(
-            format!("Syncing up to {limit} real cards for '{collection_id}'..."),
+            format!("Syncing up to {limit} cards for '{collection_id}'..."),
             false,
         );
 
@@ -425,7 +472,6 @@ impl AppContext {
         &mut self,
         msg: AsyncMessage,
         current_screen: super::Screen,
-        collection_filter: Option<&str>,
     ) -> Option<super::Screen> {
         match msg {
             AsyncMessage::CollectionsSynced { result } => {
@@ -435,9 +481,13 @@ impl AppContext {
                         if let Err(e) = self.store.upsert_collections(&cols) {
                             self.set_banner(format!("Failed saving sets: {e}"), true);
                         } else {
-                            self.refresh_cached_stats(collection_filter);
+                            self.refresh_cached_stats();
+                            let u_name = self
+                                .active_universe()
+                                .map(|u| u.name.as_str())
+                                .unwrap_or("active universe");
                             self.set_banner(
-                                format!("Synced {} Pokémon sets from TCGdex", cols.len()),
+                                format!("Synced {} sets for {u_name}", cols.len()),
                                 false,
                             );
                         }
@@ -467,12 +517,14 @@ impl AppContext {
                         let _ = self
                             .store
                             .mark_collection_synced(&collection_id, &Utc::now().to_rfc3339());
-                        self.refresh_cached_stats(collection_filter);
+                        self.refresh_cached_stats();
                         self.set_banner(
                             format!("Synced {count} cards for '{collection_id}'"),
                             false,
                         );
                         if open_pack_after && current_screen == super::Screen::CollectionSelect {
+                            self.selected_collection_id = collection_id;
+                            self.refresh_selected_collection_rarities();
                             return Some(super::Screen::PackSelect);
                         }
                     }
@@ -484,6 +536,8 @@ impl AppContext {
                                 true,
                             );
                             if open_pack_after && current_screen == super::Screen::CollectionSelect {
+                                self.selected_collection_id = collection_id;
+                                self.refresh_selected_collection_rarities();
                                 return Some(super::Screen::PackSelect);
                             }
                         } else {
@@ -499,15 +553,22 @@ impl AppContext {
             AsyncMessage::ImageLoaded {
                 card_id,
                 quality,
+                generation,
                 result,
             } => {
                 let key = ImageCache::cache_key(&card_id, quality);
                 self.in_flight_images.remove(&key);
+                if generation != self.image_cache.generation() {
+                    return None;
+                }
                 match result {
                     Ok((img, path)) => {
                         let path_str = path.to_string_lossy().to_string();
                         let _ = self.store.update_local_image_path(&card_id, &path_str);
-                        self.cache_stats = self.image_cache.stats();
+
+                        if quality != self.settings.image_quality {
+                            return None;
+                        }
 
                         for slot in self.image_slots.values_mut() {
                             if slot.assigned_card_id.as_deref() == Some(&card_id) {
@@ -516,6 +577,9 @@ impl AppContext {
                         }
                     }
                     Err(e) => {
+                        if quality != self.settings.image_quality {
+                            return None;
+                        }
                         let msg = e.to_string();
                         for slot in self.image_slots.values_mut() {
                             if slot.assigned_card_id.as_deref() == Some(&card_id) {

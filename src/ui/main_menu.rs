@@ -41,38 +41,63 @@ fn render_menu_panel(
         .constraints([Constraint::Length(9), Constraint::Min(8)])
         .split(area);
 
-    let logo = vec![
-        Line::from(Span::styled(
-            "╭──────────────────────────────────────────╮",
-            Style::default().fg(theme::ACCENT_CYAN),
-        )),
-        Line::from(Span::styled(
-            "│   ✦  TERMINAL TRADING CARD VAULT  ✦      │",
-            theme::title_style(),
-        )),
-        Line::from(Span::styled(
-            "│   Collect • Rip Packs • Inspect Artwork  │",
-            theme::muted_style(),
-        )),
-        Line::from(Span::styled(
-            "╰──────────────────────────────────────────╯",
-            Style::default().fg(theme::ACCENT_CYAN),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Active Universe: ", theme::muted_style()),
-            theme::pill_badge(
-                ctx.active_universe()
-                    .map(|u| format!("{} {}", u.badge, u.name))
-                    .unwrap_or_else(|| "Pokémon TCG".to_string()),
-                theme::BG_DARK,
-                theme::ACCENT_GREEN,
-            ),
-        ]),
-    ];
+    let logo = if rows[0].width >= 48 {
+        vec![
+            Line::from(Span::styled(
+                "╭──────────────────────────────────────────╮",
+                Style::default().fg(theme::ACCENT_CYAN),
+            )),
+            Line::from(Span::styled(
+                "│   ✦  TERMINAL TRADING CARD VAULT  ✦      │",
+                theme::title_style(),
+            )),
+            Line::from(Span::styled(
+                "│   Collect • Rip Packs • Inspect Artwork  │",
+                theme::muted_style(),
+            )),
+            Line::from(Span::styled(
+                "╰──────────────────────────────────────────╯",
+                Style::default().fg(theme::ACCENT_CYAN),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Active Universe: ", theme::muted_style()),
+                theme::pill_badge(
+                    ctx.active_universe()
+                        .map(|u| format!("{} {}", u.badge, u.name))
+                        .unwrap_or_else(|| "None".to_string()),
+                    theme::BG_DARK,
+                    theme::ACCENT_GREEN,
+                ),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                "✦ TERMINAL TRADING CARD VAULT ✦",
+                theme::title_style(),
+            )),
+            Line::from(Span::styled(
+                "Collect • Rip Packs • Inspect Artwork",
+                theme::muted_style(),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Universe: ", theme::muted_style()),
+                theme::pill_badge(
+                    ctx.active_universe()
+                        .map(|u| format!("{} {}", u.badge, u.name))
+                        .unwrap_or_else(|| "None".to_string()),
+                    theme::BG_DARK,
+                    theme::ACCENT_GREEN,
+                ),
+            ]),
+        ]
+    };
 
     let hero = Paragraph::new(logo)
         .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true })
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -83,6 +108,7 @@ fn render_menu_panel(
         );
     frame.render_widget(hero, rows[0]);
 
+    let desc_max_w = rows[1].width.saturating_sub(6) as usize;
     let items: Vec<ListItem<'_>> = MENU_ITEMS
         .iter()
         .enumerate()
@@ -96,10 +122,17 @@ fn render_menu_panel(
             } else {
                 theme::primary_style()
             };
-            ListItem::new(vec![
-                Line::from(Span::styled(format!("{marker}{title}"), title_style)),
-                Line::from(Span::styled(format!("  {desc}"), theme::muted_style())),
-            ])
+            let mut item_lines = vec![Line::from(Span::styled(
+                format!("{marker}{title}"),
+                title_style,
+            ))];
+            for line in theme::wrap_plain_text(desc, desc_max_w.max(12)) {
+                item_lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    theme::muted_style(),
+                )));
+            }
+            ListItem::new(item_lines)
         })
         .collect();
 
@@ -240,13 +273,14 @@ fn render_pack_history(
     screen: &MainMenuScreen,
     area: Rect,
 ) {
-    let packs_opened = ctx.pack_history.len();
-    let title = if ctx.pack_history.is_empty() {
+    let recent_count = ctx.pack_history.len();
+    let total_opened = ctx.total_packs_opened.max(recent_count);
+    let title = if total_opened == 0 {
         "Recent Pack History (0)".to_string()
     } else if screen.focus_history {
-        format!("Recent Pack History ({packs_opened}) — [Enter] Inspect")
+        format!("Recent Pack History ({total_opened} total) — [Enter] Inspect")
     } else {
-        format!("Recent Pack History ({packs_opened}) — [Tab] Focus")
+        format!("Recent Pack History ({total_opened} total) — [Tab] Focus")
     };
 
     if ctx.pack_history.is_empty() {

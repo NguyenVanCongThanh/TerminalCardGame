@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -24,6 +25,7 @@ impl SqliteStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let store = Self {
@@ -113,6 +115,7 @@ impl SqliteStore {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            PRAGMA user_version = 1;
             "#,
         )?;
         Ok(())
@@ -540,6 +543,19 @@ impl InventoryRepository for SqliteStore {
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
+
+    fn count_pack_history(&self, universe_id: Option<&str>) -> AppResult<usize> {
+        let conn = self.conn.lock().expect("sqlite mutex poisoned");
+        let count: i64 = match universe_id {
+            Some(uid) => conn.query_row(
+                "SELECT COUNT(*) FROM pack_history WHERE universe_id = ?1",
+                [uid],
+                |r| r.get(0),
+            )?,
+            None => conn.query_row("SELECT COUNT(*) FROM pack_history", [], |r| r.get(0))?,
+        };
+        Ok(count.max(0) as usize)
+    }
 }
 
 impl SettingsRepository for SqliteStore {
@@ -651,6 +667,9 @@ mod tests {
 
         let history = store.list_pack_history(10).unwrap();
         assert_eq!(history.len(), 2);
+        assert_eq!(store.count_pack_history(None).unwrap(), 2);
+        assert_eq!(store.count_pack_history(Some("pokemon")).unwrap(), 2);
+        assert_eq!(store.count_pack_history(Some("yugioh")).unwrap(), 0);
 
         let s = AppSettings {
             protocol_mode: ProtocolMode::Halfblocks,

@@ -39,7 +39,13 @@ impl ScreenController for UniverseSelectScreen {
                 if let Some(u) = ctx.universes.get(self.universe_idx).cloned() {
                     if u.is_implemented {
                         ctx.selected_universe_id = u.id;
-                        ctx.refresh_cached_stats(None);
+                        ctx.refresh_cached_stats();
+                        ctx.selected_collection_id = ctx
+                            .collections
+                            .first()
+                            .map(|c| c.id.clone())
+                            .unwrap_or_default();
+                        ctx.refresh_selected_collection_rarities();
                         return ScreenAction::Navigate(Screen::CollectionSelect);
                     }
                     ctx.set_banner(

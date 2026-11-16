@@ -92,11 +92,8 @@ pub fn render(
                 .iter()
                 .filter(|o| o.card.universe_id == u.id)
                 .count();
-            let packs_in_u = ctx
-                .pack_history
-                .iter()
-                .filter(|p| p.universe_id == u.id)
-                .count();
+            let sets_in_u = ctx.universe_set_counts.get(&u.id).copied().unwrap_or(0);
+            let packs_in_u = ctx.universe_pack_counts.get(&u.id).copied().unwrap_or(0);
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "Your Vault Stats:",
@@ -104,7 +101,7 @@ pub fn render(
             )));
             lines.push(Line::from(vec![
                 Span::styled("  Available Sets : ", theme::muted_style()),
-                Span::styled(format!("{}", ctx.collections.len()), theme::primary_style()),
+                Span::styled(format!("{sets_in_u}"), theme::primary_style()),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  Unique Owned   : ", theme::muted_style()),

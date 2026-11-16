@@ -37,6 +37,7 @@ pub trait InventoryRepository: Send + Sync {
         cards: &[(&str, Card)],
     ) -> AppResult<Vec<PulledCard>>;
     fn list_pack_history(&self, limit: usize) -> AppResult<Vec<PackHistoryEntry>>;
+    fn count_pack_history(&self, universe_id: Option<&str>) -> AppResult<usize>;
 }
 
 /// Persistence contract for player preferences.

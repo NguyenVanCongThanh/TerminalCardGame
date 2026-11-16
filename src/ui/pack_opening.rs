@@ -3,29 +3,29 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, LineGauge, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Table, TableState, Wrap,
+    Block, BorderType, Borders, Cell, Clear, LineGauge, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
 };
 
 use crate::app::{AppContext, PackOpeningScreen, PackPhase};
 use crate::domain::PulledCard;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    BoosterPackWidget, PackStripWidget, render_card_artwork_frame, render_card_back,
+    BoosterPackWidget, PackStripWidget, render_card_artwork_frame_guarded, render_card_back,
     render_sparkle_border_overlay,
 };
 
 pub fn render(
     frame: &mut Frame<'_>,
     ctx: &mut AppContext,
-    screen: &PackOpeningScreen,
+    screen: &mut PackOpeningScreen,
     area: Rect,
 ) {
     let Some(ref state) = screen.state else {
         return;
     };
 
-    match state.phase.clone() {
+    match state.phase {
         PackPhase::Ripping { ticks, max_ticks } => {
             render_ripping_animation(
                 frame,
@@ -41,29 +41,32 @@ pub fn render(
         }
         PackPhase::Revealing {
             cursor,
-            revealed,
+            ref revealed,
             flash_ticks,
         } => {
-            let cards = state.result.cards.clone();
-            let col_name = state.result.collection_name.clone();
-            let pack_name = state.result.pack_config.name.clone();
             render_reveal_view(
                 frame,
                 ctx,
-                &col_name,
-                &pack_name,
-                &cards,
-                &revealed,
+                &state.result.collection_name,
+                &state.result.pack_config.name,
+                &state.result.cards,
+                revealed,
                 cursor,
                 flash_ticks,
+                &mut screen.detail_scroll,
                 area,
             );
         }
         PackPhase::Summary { cursor } => {
-            let cards = state.result.cards.clone();
-            let col_name = state.result.collection_name.clone();
-            let pack_name = state.result.pack_config.name.clone();
-            render_summary_view(frame, ctx, &col_name, &pack_name, &cards, cursor, area);
+            render_summary_view(
+                frame,
+                ctx,
+                &state.result.collection_name,
+                &state.result.pack_config.name,
+                &state.result.cards,
+                cursor,
+                area,
+            );
         }
     }
 }
@@ -153,6 +156,7 @@ fn render_reveal_view(
     revealed: &[bool],
     cursor: usize,
     flash_ticks: u8,
+    detail_scroll: &mut u16,
     area: Rect,
 ) {
     let rows = Layout::default()
@@ -201,14 +205,17 @@ fn render_reveal_view(
         render_unrevealed_info(frame, pulled, cursor, cards.len(), main_cols[1]);
     } else {
         let tick = ctx.tick;
+        let suppress = ctx.should_suppress_artwork();
         if let Some(slot) = ctx.image_slots.get_mut("main") {
-            render_card_artwork_frame(
+            render_card_artwork_frame_guarded(
                 frame,
                 main_cols[0],
                 &pulled.card,
                 slot,
                 tick,
                 flash_ticks > 0 || pulled.card.rarity.is_hit(),
+                None,
+                suppress,
             );
             if flash_ticks > 0 {
                 let flash_color = if pulled.card.rarity.is_hit() {
@@ -230,6 +237,7 @@ fn render_reveal_view(
             cursor,
             cards.len(),
             tick,
+            detail_scroll,
             main_cols[1],
         );
     }
@@ -244,6 +252,12 @@ fn render_summary_view(
     cursor: usize,
     area: Rect,
 ) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::BG_DARK)),
+        area,
+    );
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(10)])
@@ -258,33 +272,50 @@ fn render_summary_view(
         .max()
         .unwrap_or(crate::domain::Rarity::Common);
 
-    let summary_header = Line::from(vec![
-        theme::pill_badge("PACK COMPLETE", theme::BG_DARK, theme::ACCENT_GREEN),
-        Span::raw("  "),
-        Span::styled(
+    let mut summary_spans = vec![theme::pill_badge(
+        if rows[0].width < 92 {
+            "COMPLETE"
+        } else {
+            "PACK COMPLETE"
+        },
+        theme::BG_DARK,
+        theme::ACCENT_GREEN,
+    )];
+    if rows[0].width >= 96 {
+        summary_spans.push(Span::raw("  "));
+        summary_spans.push(Span::styled(
             format!("{collection_name} • {pack_name}"),
             theme::primary_style(),
-        ),
-        Span::styled("  │  ", theme::muted_style()),
+        ));
+    } else {
+        summary_spans.push(Span::raw(" "));
+        summary_spans.push(Span::styled(
+            collection_name.chars().take(18).collect::<String>(),
+            theme::primary_style(),
+        ));
+    }
+    summary_spans.extend([
+        Span::styled(" │ ", theme::muted_style()),
         Span::styled(
             format!("Hits: {hits}"),
             Style::default()
                 .fg(theme::ACCENT_GOLD)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  │  ", theme::muted_style()),
+        Span::styled(" │ ", theme::muted_style()),
         Span::styled(
             format!("New: {new_cards}"),
             Style::default()
                 .fg(theme::ACCENT_CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  │  ", theme::muted_style()),
+        Span::styled(" │ ", theme::muted_style()),
         Span::styled(
             format!("Best: {}", best_rarity.label()),
             theme::rarity_style(best_rarity, ctx.tick),
         ),
     ]);
+    let summary_header = Line::from(summary_spans);
     let header_block = theme::colored_panel_block("Pack Pull Summary", theme::ACCENT_GOLD);
     frame.render_widget(Paragraph::new(summary_header).block(header_block), rows[0]);
 
@@ -367,6 +398,7 @@ fn render_summary_view(
     frame.render_widget(action_bar, left_rows[1]);
 
     let tick = ctx.tick;
+    let suppress = ctx.should_suppress_artwork();
     if let Some(pulled) = cards.get(cursor)
         && let Some(slot) = ctx.image_slots.get_mut("main")
     {
@@ -375,7 +407,7 @@ fn render_summary_view(
         } else {
             format!("OWNED x{}", pulled.new_quantity)
         };
-        crate::ui::widgets::render_card_artwork_frame_with_badge(
+        render_card_artwork_frame_guarded(
             frame,
             cols[1],
             &pulled.card,
@@ -383,6 +415,7 @@ fn render_summary_view(
             tick,
             true,
             Some(&badge),
+            suppress,
         );
     }
 }
@@ -438,6 +471,7 @@ fn render_revealed_metadata(
     cursor: usize,
     total: usize,
     tick: u64,
+    detail_scroll: &mut u16,
     area: Rect,
 ) {
     let card = &pulled.card;
@@ -529,8 +563,24 @@ fn render_revealed_metadata(
     } else {
         theme::BORDER_DIM
     };
+    let inner_w = area.width.saturating_sub(4);
+    let visible_h = area.height.saturating_sub(2);
+    let total_lines = theme::wrapped_line_count(&lines, inner_w);
+    let max_scroll = total_lines.saturating_sub(visible_h);
+    *detail_scroll = (*detail_scroll).min(max_scroll);
+
     let panel = Paragraph::new(lines)
         .wrap(Wrap { trim: true })
+        .scroll((*detail_scroll, 0))
         .block(theme::colored_panel_block("Card Pull Details", border_color));
     frame.render_widget(panel, area);
+
+    if total_lines > visible_h {
+        let mut sb = ScrollbarState::new(max_scroll as usize + 1).position(*detail_scroll as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area,
+            &mut sb,
+        );
+    }
 }

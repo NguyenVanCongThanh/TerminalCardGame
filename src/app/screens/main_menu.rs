@@ -78,6 +78,13 @@ impl ScreenController for MainMenuScreen {
         }
     }
 
+    fn on_enter(&mut self, ctx: &mut AppContext) {
+        ctx.refresh_cache_stats();
+        if self.history_idx >= ctx.pack_history.len() {
+            self.history_idx = 0;
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut AppContext) -> ScreenAction {
         const MENU_LEN: usize = 5;
         if key.code == KeyCode::Tab && !ctx.pack_history.is_empty() {
